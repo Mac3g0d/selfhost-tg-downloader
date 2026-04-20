@@ -1,0 +1,24 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tg-downloader-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DOWNLOAD_DIR=/tmp/tg-downloads
+      - COOKIES_FILE=/app/cookies/instagram.txt
+    volumes:
+      - downloads:/tmp/tg-downloads
+      - ./cookies:/app/cookies:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  downloads:
+    driver: local
