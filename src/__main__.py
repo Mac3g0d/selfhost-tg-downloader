@@ -54,6 +54,8 @@ def main() -> None:
 
 
     run_healthchecks()
+    from database import init_db
+    asyncio.run(init_db())
 
     bot = create_bot()
     dp = create_dispatcher()

@@ -19,6 +19,7 @@ def run_healthchecks() -> None:
 
     _check_auth()
     _check_inline()
+    _check_database()
     _check_gallery_dl()
     _check_download_dir()
 
@@ -61,6 +62,12 @@ def _check_inline() -> None:
             status="disabled",
             hint="Set BUFFER_CHAT_ID to enable inline mode",
         )
+def _check_database() -> None:
+    path = Path(settings.DATABASE_PATH)
+    if path.exists():
+        log.info("database_ok", path=str(path.resolve()))
+    else:
+        log.info("database_pending", path=str(path.resolve()), hint="Will be created on startup")
 
 
 def _check_gallery_dl() -> None:
@@ -71,6 +78,13 @@ def _check_gallery_dl() -> None:
         log.info("gallery_dl_found", path=binary)
     else:
         log.error("gallery_dl_missing", configured_bin=settings.gallery_dl_bin)
+
+    if settings.USE_ARIA2:
+        aria_bin = shutil.which("aria2c")
+        if aria_bin:
+            log.info("aria2c_found", path=aria_bin)
+        else:
+            log.warning("aria2c_missing", hint="Install aria2c to speed up downloads")
 
 
 def _check_download_dir() -> None:

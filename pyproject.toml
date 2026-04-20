@@ -7,6 +7,7 @@ license = { text = "MIT" }
 requires-python = ">=3.14"
 dependencies = [
     "aiogram>=3.20,<4.0",
+    "aiosqlite>=0.22.1",
     "gallery-dl>=1.29",
     "pydantic-settings>=2.9",
     "structlog>=25.1",

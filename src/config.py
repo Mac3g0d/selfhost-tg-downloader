@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     TELEGRAM_BOT_TOKEN: str
     BUFFER_CHAT_ID: int = 0
+    DATABASE_PATH: str = "data/cache.db"
     DOWNLOAD_DIR: str = "/tmp/tg-downloads"
     COOKIES_FILE: str = "cookies/instagram.txt"
     INSTAGRAM_USER: str = ""
@@ -17,6 +18,8 @@ class Settings(BaseSettings):
     max_telegram_file_size: int = Field(default=50 * 1024 * 1024)
     gallery_dl_bin: str = "gallery-dl"
     DOWNLOAD_TIMEOUT: int = 120
+    USE_ARIA2: bool = False
+    CONCURRENT_FRAGMENTS: int = 5
 
 
 settings = Settings()

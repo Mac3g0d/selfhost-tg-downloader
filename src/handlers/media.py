@@ -1,5 +1,4 @@
 import re
-from pathlib import Path
 
 import structlog
 from aiogram import Router, types
@@ -24,35 +23,25 @@ URL_PATTERN: re.Pattern[str] = re.compile(
 
 
 def _extract_urls(text: str) -> list[str]:
-    return URL_PATTERN.findall(text)
-
-
-async def _send_media_file(
-    message: types.Message,
-    file_path: Path,
-    *,
-    is_video: bool,
-) -> None:
-    file_size = file_path.stat().st_size
-
-    if file_size > settings.max_telegram_file_size:
-        await message.reply(
-            f"⚠️ Файл слишком большой ({file_size / 1024 / 1024:.1f} MB). "
-            f"Лимит Telegram — {settings.max_telegram_file_size / 1024 / 1024:.0f} MB."
-        )
-        return
-
-    input_file = FSInputFile(file_path)
-
-    if is_video:
-        await message.reply_video(video=input_file, supports_streaming=True)
-    else:
-        await message.reply_photo(photo=input_file)
+    from utils import clean_url
+    return [clean_url(u) for u in URL_PATTERN.findall(text)]
 
 
 async def _process_url(message: types.Message, url: str) -> None:
     user_id = message.from_user.id if message.from_user else "unknown"
     log.info("processing_url", url=url, user_id=user_id, chat_id=message.chat.id)
+
+    from database import get_cached_media, set_cached_media
+
+    cached_data = await get_cached_media(url)
+    if cached_data:
+        log.info("inline_cache_hit", url=url)
+        for item in cached_data:
+            if item["type"] == "video":
+                await message.reply_video(video=item["file_id"], supports_streaming=True)
+            else:
+                await message.reply_photo(photo=item["file_id"])
+        return
 
     status_msg = await message.reply("⏳ Скачиваю...")
 
@@ -68,8 +57,31 @@ async def _process_url(message: types.Message, url: str) -> None:
         return
 
     try:
+        cache_items = []
         for media_file in result.media_files:
-            await _send_media_file(message, media_file.path, is_video=media_file.is_video)
+            file_path = media_file.path
+            file_size = file_path.stat().st_size
+
+            if file_size > settings.max_telegram_file_size:
+                await message.reply(
+                    f"⚠️ Файл слишком большой ({file_size / 1024 / 1024:.1f} MB). "
+                    f"Лимит Telegram — {settings.max_telegram_file_size / 1024 / 1024:.0f} MB."
+                )
+                continue
+
+            input_file = FSInputFile(file_path)
+
+            if media_file.is_video:
+                msg = await message.reply_video(video=input_file, supports_streaming=True)
+                if msg.video:
+                    cache_items.append({"type": "video", "file_id": msg.video.file_id})
+            else:
+                msg = await message.reply_photo(photo=input_file)
+                if msg.photo:
+                    cache_items.append({"type": "photo", "file_id": msg.photo[-1].file_id})
+
+        if cache_items:
+            await set_cached_media(url, cache_items)
 
         await status_msg.delete()
 

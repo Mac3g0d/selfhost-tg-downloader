@@ -76,6 +76,14 @@ def _build_cmd(work_dir: Path) -> list[str]:
     elif settings.COOKIES_FILE and Path(settings.COOKIES_FILE).is_file():
         cmd.extend(["--cookies", settings.COOKIES_FILE])
 
+    if settings.USE_ARIA2:
+        cmd.extend(["--downloader", "aria2"])
+
+    # Speed up yt-dlp (used by gallery-dl for many sites)
+    cmd.extend([
+        "--option", f"ytdl.concurrent-fragments={settings.CONCURRENT_FRAGMENTS}",
+    ])
+
     return cmd
 
 
