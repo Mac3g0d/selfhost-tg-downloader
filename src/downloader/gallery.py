@@ -80,9 +80,12 @@ def _build_cmd(work_dir: Path) -> list[str]:
         cmd.extend(["--downloader", "aria2"])
 
     # Speed up yt-dlp (used by gallery-dl for many sites)
-    cmd.extend([
-        "--option", f"ytdl.concurrent-fragments={settings.CONCURRENT_FRAGMENTS}",
-    ])
+    cmd.extend(
+        [
+            "--option",
+            f"ytdl.concurrent-fragments={settings.CONCURRENT_FRAGMENTS}",
+        ]
+    )
 
     return cmd
 
@@ -146,4 +149,3 @@ def cleanup(directory: Path) -> None:
         log.debug("cleanup_done", directory=str(directory))
     except Exception:
         log.exception("cleanup_failed", directory=str(directory))
-

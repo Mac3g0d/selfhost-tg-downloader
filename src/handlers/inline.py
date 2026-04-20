@@ -1,8 +1,10 @@
+import contextlib
 import hashlib
 import random
 
 import structlog
 from aiogram import Bot, Router
+from aiogram.enums import ChatAction
 from aiogram.types import (
     FSInputFile,
     InlineQuery,
@@ -66,6 +68,7 @@ def _build_caption(query: InlineQuery, url: str) -> str:
 @router.inline_query()
 async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
     from utils import clean_url
+
     url = clean_url(query.query.strip()) if query.query.strip() else ""
 
     if not url or not _is_supported_url(url):
@@ -120,11 +123,9 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
         return
 
     # Отправляем "спиннер" пользователю в личку, чтобы было видно активность
-    from aiogram.enums import ChatAction
-    try:
+
+    with contextlib.suppress(Exception):
         await bot.send_chat_action(chat_id=query.from_user.id, action=ChatAction.UPLOAD_VIDEO)
-    except Exception:
-        pass  # Может не сработать, если пользователь не жал /start
 
     result: DownloadResult = await download_media(url)
 

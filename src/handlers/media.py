@@ -24,6 +24,7 @@ URL_PATTERN: re.Pattern[str] = re.compile(
 
 def _extract_urls(text: str) -> list[str]:
     from utils import clean_url
+
     return [clean_url(u) for u in URL_PATTERN.findall(text)]
 
 

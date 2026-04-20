@@ -53,6 +53,7 @@ def _check_auth() -> None:
             hint="Instagram downloads will fail without auth",
         )
 
+
 def _check_inline() -> None:
     if settings.BUFFER_CHAT_ID:
         log.info("inline_mode", status="enabled", buffer_chat_id=settings.BUFFER_CHAT_ID)
@@ -62,6 +63,8 @@ def _check_inline() -> None:
             status="disabled",
             hint="Set BUFFER_CHAT_ID to enable inline mode",
         )
+
+
 def _check_database() -> None:
     path = Path(settings.DATABASE_PATH)
     if path.exists():

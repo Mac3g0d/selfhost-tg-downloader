@@ -29,9 +29,10 @@ async def init_db() -> None:
 
 
 async def get_cached_media(url: str) -> list[dict[str, Any]] | None:
-    async with aiosqlite.connect(settings.DATABASE_PATH) as db, db.execute(
-        "SELECT file_ids_json FROM media_cache WHERE url = ?", (url,)
-    ) as cursor:
+    async with (
+        aiosqlite.connect(settings.DATABASE_PATH) as db,
+        db.execute("SELECT file_ids_json FROM media_cache WHERE url = ?", (url,)) as cursor,
+    ):
         row = await cursor.fetchone()
         if row:
             return json.loads(row[0])  # type: ignore[no-any-return]

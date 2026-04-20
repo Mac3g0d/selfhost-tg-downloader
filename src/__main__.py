@@ -52,9 +52,9 @@ def _configure_logging() -> None:
 def main() -> None:
     _configure_logging()
 
-
     run_healthchecks()
     from database import init_db
+
     asyncio.run(init_db())
 
     bot = create_bot()
