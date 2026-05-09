@@ -3,5 +3,6 @@ from urllib.parse import urlparse, urlunparse
 
 def clean_url(url: str) -> str:
     parsed = urlparse(url)
-    # Strip query and fragments for TikTok and Instagram
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    # Strip query, fragments, and trailing slash for TikTok and Instagram
+    path = parsed.path.rstrip('/')
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
