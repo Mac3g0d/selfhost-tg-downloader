@@ -148,7 +148,7 @@ venv.bak/
 cookies/*.txt
 
 # Database (sensitive)
-data/cache.db
+data/
 
 # Spyder project settings
 .spyderproject
