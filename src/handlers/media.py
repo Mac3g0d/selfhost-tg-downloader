@@ -14,10 +14,10 @@ router = Router(name="media")
 
 URL_PATTERN: re.Pattern[str] = re.compile(
     r"https?://(?:"
-    r"(?:www\.|vm\.|vt\.)?tiktok\.com"
+    r"(?:www\.|vm\.|vt\.|p\.|m\.)?tiktok\.com"
     r"|(?:www\.)?instagram\.com"
     r"|(?:www\.)?instagr\.am"
-    r")/\S+",
+    r")/[\w\-./?%&=+]*",
     re.IGNORECASE,
 )
 
@@ -25,7 +25,7 @@ URL_PATTERN: re.Pattern[str] = re.compile(
 def _extract_urls(text: str) -> list[str]:
     from utils import clean_url
 
-    return [clean_url(u) for u in URL_PATTERN.findall(text)]
+    return [clean_url(u.strip()) for u in URL_PATTERN.findall(text)]
 
 
 async def _process_url(message: types.Message, url: str) -> None:

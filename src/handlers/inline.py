@@ -55,7 +55,7 @@ def _build_caption(query: InlineQuery, url: str) -> str:
     ]
 
     if user.username:
-        parts.append(f"📎 @{user.username}")
+        parts.append(f"📎 {user.username}")
 
     if query.chat_type:
         parts.append(f"💬 {query.chat_type}")

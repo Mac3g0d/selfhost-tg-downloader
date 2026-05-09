@@ -1,0 +1,17 @@
+
+entry_points:
+  - src/__main__.py
+
+include:
+  - src/**/*.py
+  - tests/**/*.py
+
+exclude:
+  - .venv
+  - __pycache__
+  - .git
+
+output:
+  format: mermaid
+  path: docs/architecture.svg
+  theme: dark
