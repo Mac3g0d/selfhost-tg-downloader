@@ -1,59 +1,53 @@
-import json
+import asyncio
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
+from gallery_dl import config as gdl_config
 from pytest_mock import MockerFixture
 
 from config import settings
-from downloader.gallery import _build_cmd, _build_gallery_dl_config, cleanup
+from downloader import gallery
+from downloader.gallery import _apply_settings, _Job, cleanup, download_media
+
+INSTAGRAM = ("extractor", "instagram")
+POST_URL = "https://www.instagram.com/p/ABCDEFGHIJK"
 
 
-def test_returns_none_without_credentials(tmp_path: Path) -> None:
-    assert _build_gallery_dl_config(tmp_path) is None
+@pytest.fixture(autouse=True)
+def _clean_gallery_dl_config() -> Any:
+    yield
+    gdl_config.clear()
 
 
-def test_creates_config_with_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "INSTAGRAM_USER", "testuser")
-    monkeypatch.setattr(settings, "INSTAGRAM_PASS", "testpass")
+def test_settings_without_auth() -> None:
+    _apply_settings()
 
-    config_path = _build_gallery_dl_config(tmp_path)
-
-    assert config_path is not None
-    assert config_path.exists()
-
-    data = json.loads(config_path.read_text())
-    assert data["extractor"]["instagram"]["username"] == "testuser"
-    assert data["extractor"]["instagram"]["password"] == "testpass"
+    assert gdl_config.get((), "cookies") is None
+    assert gdl_config.get(INSTAGRAM, "username") is None
+    assert gdl_config.get((), "mtime") is False
+    assert gdl_config.get(("output",), "mode") == "null"
 
 
-def test_partial_credentials_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "INSTAGRAM_USER", "testuser")
-    monkeypatch.setattr(settings, "INSTAGRAM_PASS", "")
-    assert _build_gallery_dl_config(tmp_path) is None
-
-
-def test_base_cmd(tmp_path: Path) -> None:
-    cmd = _build_cmd(tmp_path)
-    assert cmd[0] == "gallery-dl"
-    assert "--no-mtime" in cmd
-    assert "--dest" in cmd
-    assert str(tmp_path) in cmd
-
-
-def test_with_cookies_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_with_cookies_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("cookie data")
     monkeypatch.setattr(settings, "COOKIES_FILE", str(cookies))
 
-    cmd = _build_cmd(tmp_path)
+    _apply_settings()
 
-    assert "--cookies" in cmd
-    assert str(cookies) in cmd
+    assert gdl_config.get((), "cookies") == str(cookies)
 
 
-def test_without_cookies_file(tmp_path: Path) -> None:
-    cmd = _build_cmd(tmp_path)
-    assert "--cookies" not in cmd
+def test_missing_cookies_file_is_not_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "COOKIES_FILE", str(tmp_path / "absent.txt"))
+
+    _apply_settings()
+
+    assert gdl_config.get((), "cookies") is None
 
 
 def test_credentials_take_priority_over_cookies(
@@ -65,10 +59,139 @@ def test_credentials_take_priority_over_cookies(
     monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
     monkeypatch.setattr(settings, "INSTAGRAM_PASS", "pass")
 
-    cmd = _build_cmd(tmp_path)
+    _apply_settings()
 
-    assert "--config" in cmd
-    assert "--cookies" not in cmd
+    assert gdl_config.get(INSTAGRAM, "username") == "user"
+    assert gdl_config.get(INSTAGRAM, "password") == "pass"
+    assert gdl_config.get((), "cookies") is None
+
+
+def test_partial_credentials_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
+    monkeypatch.setattr(settings, "INSTAGRAM_PASS", "")
+
+    _apply_settings()
+
+    assert gdl_config.get(INSTAGRAM, "username") is None
+
+
+def test_credentials_are_removed_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
+    monkeypatch.setattr(settings, "INSTAGRAM_PASS", "pass")
+    _apply_settings()
+    monkeypatch.setattr(settings, "INSTAGRAM_USER", "")
+
+    _apply_settings()
+
+    assert gdl_config.get(INSTAGRAM, "password") is None
+
+
+def test_each_job_answers_its_own_destination(tmp_path: Path) -> None:
+    first = _Job(POST_URL, dest=tmp_path / "a")
+    second = _Job(POST_URL, dest=tmp_path / "b")
+
+    assert first.extractor.config("base-directory") == str(tmp_path / "a")
+    assert second.extractor.config("base-directory") == str(tmp_path / "b")
+    assert gdl_config.get((), "base-directory") is None
+
+
+def test_child_job_inherits_destination_and_cancel_flag(tmp_path: Path) -> None:
+    cancel = threading.Event()
+    parent = _Job(POST_URL, dest=tmp_path, cancel=cancel)
+
+    child = _Job(POST_URL, parent)
+
+    assert child.extractor.config("base-directory") == str(tmp_path)
+    assert child.cancel is cancel
+    assert child.root is parent
+
+
+async def test_successful_download_returns_files_and_timings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    monkeypatch.setattr(settings, "DOWNLOAD_DIR", str(tmp_path))
+
+    def fake_job(url: str, work_dir: Path, cancel: threading.Event) -> tuple[int, str, None]:
+        (work_dir / "clip.mp4").write_bytes(b"video")
+        return 0, "", None
+
+    mocker.patch.object(gallery, "_run_job", side_effect=fake_job)
+
+    result = await download_media(POST_URL)
+
+    assert result.success
+    assert [item.path.name for item in result.media_files] == ["clip.mp4"]
+    assert result.timings["download_ms"] >= 0
+    assert result.work_dir is not None
+    cleanup(result.work_dir)
+
+
+async def test_failed_download_reports_gallery_dl_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    monkeypatch.setattr(settings, "DOWNLOAD_DIR", str(tmp_path))
+    mocker.patch.object(gallery, "_run_job", return_value=(4, "[instagram][error] boom", None))
+
+    result = await download_media(POST_URL)
+
+    assert not result.success
+    assert result.error == "[instagram][error] boom"
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_partial_download_is_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    monkeypatch.setattr(settings, "DOWNLOAD_DIR", str(tmp_path))
+
+    def partial_job(url: str, work_dir: Path, cancel: threading.Event) -> tuple[int, str, None]:
+        (work_dir / "first.jpg").write_bytes(b"photo")
+        return 4, "[download][error] Failed to download second.jpg", None
+
+    mocker.patch.object(gallery, "_run_job", side_effect=partial_job)
+
+    result = await download_media(POST_URL)
+
+    assert not result.success
+    assert "second.jpg" in result.error
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_timeout_cancels_job_and_cleans_up_after_it_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    monkeypatch.setattr(settings, "DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "DOWNLOAD_TIMEOUT", 0.05)
+    stopped = threading.Event()
+
+    def slow_job(url: str, work_dir: Path, cancel: threading.Event) -> tuple[int, str, None]:
+        assert cancel.wait(timeout=5)
+        (work_dir / "late.mp4").write_bytes(b"late")
+        stopped.set()
+        return 1, "", None
+
+    mocker.patch.object(gallery, "_run_job", side_effect=slow_job)
+
+    result = await download_media(POST_URL)
+
+    assert not result.success
+    assert "timed out" in result.error
+    assert stopped.wait(timeout=5)
+    for _ in range(100):
+        if not list(tmp_path.iterdir()):
+            break
+        await asyncio.sleep(0.01)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_unsupported_url_is_reported(tmp_path: Path) -> None:
+    status, error, first_file_at = gallery._run_job(
+        "https://example.com/nothing", tmp_path, threading.Event()
+    )
+
+    assert status != 0
+    assert error == "Unsupported URL"
+    assert first_file_at is None
 
 
 def test_requests_directory_cleanup(tmp_path: Path, mocker: MockerFixture) -> None:

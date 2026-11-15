@@ -15,7 +15,7 @@ A self-hosted Telegram bot that turns TikTok and Instagram links into videos and
 - Return videos and photos, including multiple files from a single link.
 - Share media through Telegram inline mode, with a separate buffer chat for uploads.
 - Reuse cached media across ordinary messages and inline queries.
-- Configure download timeouts, Instagram authentication, and optional aria2 downloading.
+- Configure download timeouts and Instagram authentication.
 - Run locally or build a Docker image for a self-hosted deployment.
 
 The bot uses long polling: it needs outbound internet access, not a public webhook endpoint. Bot replies and inline result titles are currently in Russian; this README is in English.
@@ -72,14 +72,14 @@ Settings are loaded from `.env` in the working directory and from environment va
 | `BUFFER_CHAT_ID` | `0` | Buffer chat/channel ID for inline uploads. `0` disables inline delivery. |
 | `DATABASE_PATH` | `data/cache.db` | SQLite cache location; parent directories are created on startup. |
 | `DOWNLOAD_DIR` | `~/.cache/tg-downloads` | Download workspaces; the sample `.env` uses `/tmp/tg-downloads`, and Docker/Compose use `/app/downloads`. |
-| `DOWNLOAD_TIMEOUT` | `120` | Time limit, in seconds, for the gallery-dl subprocess. |
-| `GALLERY_DL_BIN` | `gallery-dl` | gallery-dl executable name or path. |
+| `DOWNLOAD_TIMEOUT` | `120` | Time limit, in seconds, for one gallery-dl download. |
+| `GALLERY_DL_BIN` | `gallery-dl` | Unused: gallery-dl now runs inside the bot process. Still accepted so existing `.env` files load. |
 | `COOKIES_FILE` | `cookies/instagram.txt` | Path to a Netscape-format cookies file, used only if the file exists. |
 | `INSTAGRAM_USER` | Empty | Optional Instagram username; requires `INSTAGRAM_PASS`. |
 | `INSTAGRAM_PASS` | Empty | Optional Instagram password; requires `INSTAGRAM_USER`. |
 | `MAX_TELEGRAM_FILE_SIZE` | `52428800` bytes (50 MiB) | Per-file upload threshold in the ordinary message handler. |
-| `USE_ARIA2` | `false` | Ask gallery-dl to use aria2; requires `aria2c` on `PATH`. |
-| `CONCURRENT_FRAGMENTS` | `5` | Value passed to gallery-dl as `ytdl.concurrent-fragments`. |
+| `USE_ARIA2` | `false` | Unused: gallery-dl has no aria2 support. Still accepted so existing `.env` files load. |
+| `CONCURRENT_FRAGMENTS` | `5` | Unused, for the same reason as `USE_ARIA2`. |
 
 The file-size setting is checked **after downloading**, not before. It is not a disk quota, does not raise Telegram's API limits, and is not currently applied by the inline handler. Actual download behavior depends on gallery-dl and its selected extractor/downloader.
 
@@ -87,7 +87,7 @@ The file-size setting is checked **after downloading**, not before. It is not a 
 
 Export cookies for an account signed in to Instagram in Netscape `cookies.txt` format, then save them as `cookies/instagram.txt` or set `COOKIES_FILE` to another readable file path. Cookies can expire and need to be refreshed.
 
-Alternatively, set both `INSTAGRAM_USER` and `INSTAGRAM_PASS`. When both are present, the downloader writes a temporary gallery-dl configuration and uses those credentials **instead of** the cookies file. Login challenges and site restrictions can still prevent downloads.
+Alternatively, set both `INSTAGRAM_USER` and `INSTAGRAM_PASS`. When both are present, the downloader passes those credentials to gallery-dl in memory and uses them **instead of** the cookies file. Login challenges and site restrictions can still prevent downloads.
 
 `COOKIES_FILE` must name a real file: setting it to a browser name such as `chrome` does not enable browser cookie extraction in this bot.
 
@@ -140,17 +140,19 @@ Support is limited to the URL patterns accepted by the bot, even though gallery-
 
 Every request logs its stage durations (monotonic clock, milliseconds) under a shared `req_id`: `inline_timing` for inline queries and `message_timing` for chat messages, with `queue`, `cache_lookup`, `download`, `upload`, `cache_write`, `answer` and `total`. Concurrent requests for the same URL wait for the first one and are then served from the cache instead of downloading and uploading again.
 
+gallery-dl runs as a library inside the bot process, in a pool of up to 8 worker threads, so the interpreter start-up is paid once and HTTPS connections to the source sites are reused between requests. Two consequences: gallery-dl's built-in 6-12 s spacing between Instagram requests is switched off (it never applied when every download was a separate process) unless your own gallery-dl config sets `extractor.instagram.sleep-request`; and a download that hits `DOWNLOAD_TIMEOUT` is reported at once but its worker stops only at its next step, because a thread cannot be killed.
+
 Two scripts reproduce the measurements without touching the production cache:
 
 ```bash
-# Download stage only: real gallery-dl runs with the bot's command line, p50/p95 per URL.
+# Download stage only: real downloads through the bot's downloader, first run and p50/p95 of later runs.
 uv run --frozen python scripts/bench_download.py --repeats 5 URL [URL ...]
 
 # Full inline path against a local fake Telegram API (no token needed), optional uplink limit.
 uv run --frozen python scripts/bench_e2e.py --uplink-mbit 10 --duplicates 3 URL [URL ...]
 ```
 
-Both read the same settings as the bot (`COOKIES_FILE`, `DOWNLOAD_TIMEOUT`, ...) and print timings, sizes and host names only - never cookies, tokens or gallery-dl output. `bench_e2e.py` uses a temporary empty database, so the first request per URL is always a cache miss. Keep repeat counts low: each run is a real request to TikTok or Instagram.
+Both read the same settings as the bot (`COOKIES_FILE`, `DOWNLOAD_TIMEOUT`, ...) and print timings, sizes and counters only - never cookies or tokens. `bench_e2e.py` uses a temporary empty database, so the first request per URL is always a cache miss. Keep repeat counts low: each run is a real request to TikTok or Instagram.
 
 ## Local development and checks
 
@@ -190,7 +192,7 @@ src/
   database.py        SQLite file-ID cache
   utils.py           URL cleanup
   handlers/          Commands, ordinary messages, inline queries
-  downloader/        gallery-dl subprocess and media collection
+  downloader/        in-process gallery-dl jobs and media collection
 tests/              Automated tests
 ```
 

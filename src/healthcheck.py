@@ -13,7 +13,6 @@ def run_healthchecks() -> None:
         "config_loaded",
         download_dir=settings.DOWNLOAD_DIR,
         download_timeout=settings.DOWNLOAD_TIMEOUT,
-        gallery_dl_bin=settings.gallery_dl_bin,
         cwd=os.getcwd(),
     )
 
@@ -74,20 +73,15 @@ def _check_database() -> None:
 
 
 def _check_gallery_dl() -> None:
-    import shutil
+    from importlib.metadata import PackageNotFoundError, version
 
-    binary = shutil.which(settings.gallery_dl_bin)
-    if binary:
-        log.info("gallery_dl_found", path=binary)
-    else:
-        log.error("gallery_dl_missing", configured_bin=settings.gallery_dl_bin)
+    try:
+        log.info("gallery_dl_found", version=version("gallery-dl"))
+    except PackageNotFoundError:
+        log.error("gallery_dl_missing", hint="Install the gallery-dl Python package")
 
     if settings.USE_ARIA2:
-        aria_bin = shutil.which("aria2c")
-        if aria_bin:
-            log.info("aria2c_found", path=aria_bin)
-        else:
-            log.warning("aria2c_missing", hint="Install aria2c to speed up downloads")
+        log.warning("aria2_ignored", hint="gallery-dl has no aria2 support; USE_ARIA2 is unused")
 
 
 def _check_download_dir() -> None:

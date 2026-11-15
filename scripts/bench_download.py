@@ -1,13 +1,15 @@
-"""Benchmark the gallery-dl download stage with the bot's own command line.
+"""Benchmark the download stage through the bot's own downloader.
 
 The script never reads or writes the SQLite cache and never talks to Telegram,
-so every run is a real cache miss of the download stage only.
+so every run is a real cache miss of the download stage only. gallery-dl runs
+inside this process, as in the bot: the first run per site pays for new
+connections, later runs reuse them, so both are reported.
 
     uv run --frozen python scripts/bench_download.py --repeats 5 URL [URL ...]
 
-Settings (COOKIES_FILE, INSTAGRAM_USER, USE_ARIA2, ...) are taken from the
-environment / .env exactly as the bot does. Output contains no cookies, tokens
-or gallery-dl stderr text - only timings, counters and host names.
+Settings (COOKIES_FILE, INSTAGRAM_USER, DOWNLOAD_TIMEOUT, ...) are taken from
+the environment / .env exactly as the bot does. Output contains no cookies or
+tokens - only timings, sizes and counters.
 """
 
 import argparse
@@ -15,47 +17,37 @@ import asyncio
 import json
 import os
 import platform
-import re
 import resource
-import shutil
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
+from importlib.metadata import version
 from pathlib import Path
-from urllib.parse import urlparse
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "0:benchmark-placeholder")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from config import settings
-from downloader.gallery import _build_cmd, _collect_media
-from utils import clean_url
+import structlog
 
-CONNECT_RE = re.compile(r"Starting new HTTPS connection \(\d+\): ([^:\s]+)")
-SLEEP_RE = re.compile(r"Sleeping (\d+(?:\.\d+)?) seconds")
+from config import settings
+from downloader.gallery import cleanup, download_media
+from utils import clean_url
 
 
 @dataclass(slots=True)
 class Run:
     url: str
-    ok: bool = False
-    returncode: int | None = None
-    wall_s: float = 0.0
-    startup_s: float | None = None
-    extract_s: float | None = None
-    download_s: float | None = None
-    sleep_s: float = 0.0
-    fallbacks: int = 0
-    ytdl_missing: bool = False
-    files: int = 0
-    videos: int = 0
-    bytes: int = 0
-    media_hosts: list[str] = field(default_factory=list)
-    cpu_s: float | None = None
-    max_loop_lag_ms: float = 0.0
+    round: int
+    ok: bool
+    wall_s: float
+    extract_s: float | None
+    fetch_s: float | None
+    files: int
+    videos: int
+    bytes: int
+    max_loop_lag_ms: float
 
 
 async def _loop_lag(stop: asyncio.Event, out: list[float]) -> None:
@@ -68,97 +60,39 @@ async def _loop_lag(stop: asyncio.Event, out: list[float]) -> None:
     out.append(worst * 1000)
 
 
-async def run_once(url: str, root: Path, measure_cpu: bool) -> Run:
-    run = Run(url=url)
-    work_dir = Path(tempfile.mkdtemp(dir=root, prefix="bench-"))
-    site_host = urlparse(url).netloc.lower()
-    cmd = [*_build_cmd(work_dir), "--verbose", "--", url]
-
+async def run_once(url: str, round_no: int) -> Run:
     stop = asyncio.Event()
     lag: list[float] = []
     lag_task = asyncio.create_task(_loop_lag(stop, lag))
-    cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
-
-    t0 = time.perf_counter()
-    t_first: float | None = None
-    t_media: float | None = None
+    started = time.perf_counter()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        if proc.stderr is None:
-            raise RuntimeError("stderr pipe is missing")
-
-        async def read_stderr() -> None:
-            nonlocal t_first, t_media
-            stream = proc.stderr
-            if stream is None:
-                return
-            async for raw in stream:
-                now = time.perf_counter()
-                line = raw.decode(errors="replace")
-                if t_first is None:
-                    t_first = now
-                if match := CONNECT_RE.search(line):
-                    host = match.group(1).lower()
-                    is_site = host == site_host or host in {
-                        "www.tiktok.com",
-                        "www.instagram.com",
-                        "i.instagram.com",
-                    }
-                    if not is_site:
-                        if t_media is None:
-                            t_media = now
-                        if host not in run.media_hosts:
-                            run.media_hosts.append(host)
-                if match := SLEEP_RE.search(line):
-                    run.sleep_s += float(match.group(1))
-                if "Trying fallback URL" in line:
-                    run.fallbacks += 1
-                if "Cannot import yt-dlp" in line:
-                    run.ytdl_missing = True
-
-        await asyncio.wait_for(
-            asyncio.gather(read_stderr(), proc.wait()),
-            timeout=settings.DOWNLOAD_TIMEOUT,
-        )
-        run.returncode = proc.returncode
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        result = await download_media(url)
     finally:
-        t_end = time.perf_counter()
+        wall = time.perf_counter() - started
         stop.set()
         await lag_task
 
-    run.wall_s = t_end - t0
-    run.max_loop_lag_ms = lag[0] if lag else 0.0
-    if t_first is not None:
-        run.startup_s = t_first - t0
-    if t_media is not None:
-        run.extract_s = t_media - t0
-        run.download_s = t_end - t_media
-    if measure_cpu:
-        cpu_after = resource.getrusage(resource.RUSAGE_CHILDREN)
-        run.cpu_s = (cpu_after.ru_utime - cpu_before.ru_utime) + (
-            cpu_after.ru_stime - cpu_before.ru_stime
-        )
-
-    media = _collect_media(work_dir)
-    run.files = len(media)
-    run.videos = sum(1 for item in media if item.is_video)
-    run.bytes = sum(item.path.stat().st_size for item in media)
-    run.ok = run.returncode == 0 and run.files > 0
-    shutil.rmtree(work_dir, ignore_errors=True)
+    extract = result.timings.get("extract_ms")
+    fetch = result.timings.get("fetch_ms")
+    run = Run(
+        url=url,
+        round=round_no,
+        ok=result.success,
+        wall_s=wall,
+        extract_s=extract / 1000 if extract is not None else None,
+        fetch_s=fetch / 1000 if fetch is not None else None,
+        files=len(result.media_files),
+        videos=sum(1 for item in result.media_files if item.is_video),
+        bytes=sum(item.path.stat().st_size for item in result.media_files),
+        max_loop_lag_ms=lag[0] if lag else 0.0,
+    )
+    if result.work_dir:
+        cleanup(result.work_dir)
     return run
 
 
 def _pct(values: list[float], q: float) -> float:
     ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
     pos = (len(ordered) - 1) * q
     low = int(pos)
     high = min(low + 1, len(ordered) - 1)
@@ -185,7 +119,7 @@ def _versions() -> dict[str, str]:
     return {
         "commit": out(["git", "-C", str(root), "rev-parse", "--short", "HEAD"]),
         "python": platform.python_version(),
-        "gallery_dl": out([settings.gallery_dl_bin, "--version"]),
+        "gallery_dl": version("gallery-dl"),
         "ffmpeg": out(["ffmpeg", "-version"]),
         "platform": platform.platform(),
         "cpus": str(os.cpu_count()),
@@ -193,7 +127,7 @@ def _versions() -> dict[str, str]:
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("urls", nargs="+")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -201,12 +135,12 @@ async def main() -> int:
     parser.add_argument("--json", type=Path, help="write raw runs to this file")
     args = parser.parse_args()
 
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(40))
     urls = [clean_url(u.strip()) for u in args.urls]
-    root = Path(tempfile.mkdtemp(prefix="tg-bench-"))
     config = {
         "repeats": args.repeats,
         "concurrency": args.concurrency,
-        "use_aria2": settings.USE_ARIA2,
+        "pause": args.pause,
         "cookies_file_present": Path(settings.COOKIES_FILE).is_file(),
         "instagram_login_configured": bool(settings.INSTAGRAM_USER and settings.INSTAGRAM_PASS),
         "download_timeout": settings.DOWNLOAD_TIMEOUT,
@@ -215,42 +149,44 @@ async def main() -> int:
     print(json.dumps({"versions": versions, "config": config}, ensure_ascii=False))  # noqa: T201
 
     runs: list[Run] = []
-    jobs = [url for _ in range(args.repeats) for url in urls]
-    try:
-        for start in range(0, len(jobs), args.concurrency):
-            batch = jobs[start : start + args.concurrency]
-            done = await asyncio.gather(
-                *(run_once(u, root, measure_cpu=len(batch) == 1) for u in batch)
+    jobs = [(url, round_no) for round_no in range(args.repeats) for url in urls]
+    cpu_before = resource.getrusage(resource.RUSAGE_SELF)
+    for start in range(0, len(jobs), args.concurrency):
+        batch = jobs[start : start + args.concurrency]
+        done = await asyncio.gather(*(run_once(url, round_no) for url, round_no in batch))
+        runs.extend(done)
+        for r in done:
+            print(  # noqa: T201
+                f"{'ok ' if r.ok else 'ERR'} {r.wall_s:6.2f}s "
+                f"files={r.files} {r.bytes / 1e6:6.2f}MB {r.url}",
+                flush=True,
             )
-            runs.extend(done)
-            for r in done:
-                print(  # noqa: T201
-                    f"{'ok ' if r.ok else 'ERR'} {r.wall_s:6.2f}s "
-                    f"files={r.files} {r.bytes / 1e6:6.2f}MB {r.url}",
-                    flush=True,
-                )
-            if start + args.concurrency < len(jobs):
-                await asyncio.sleep(args.pause)
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
+        if start + args.concurrency < len(jobs):
+            await asyncio.sleep(args.pause)
+    cpu_after = resource.getrusage(resource.RUSAGE_SELF)
+    cpu = (cpu_after.ru_utime - cpu_before.ru_utime) + (cpu_after.ru_stime - cpu_before.ru_stime)
 
-    header = (
-        f"{'url':<46} {'ok':>5} {'MB':>6} {'files':>5}  "
-        "wall p50/p95 startup      extract      download     cpu          sleep"
+    print(  # noqa: T201
+        f"\n{'url':<46} {'ok':>5} {'MB':>6} {'files':>5}  "
+        "first    later runs p50/p95: wall  extract      fetch"
     )
-    print("\n" + header)  # noqa: T201
     for url in urls:
         group = [r for r in runs if r.url == url]
         good = [r for r in group if r.ok]
+        first = next((r for r in good if r.round == 0), None)
+        later = [r for r in good if r.round > 0]
         size = statistics.median([r.bytes for r in good]) / 1e6 if good else 0.0
-        files = good[0].files if good else 0
         print(  # noqa: T201
-            f"{url[-46:]:<46} {len(good):>2}/{len(group):<2} {size:6.2f} {files:>5}  "
-            f"{_stat(good, 'wall_s')}{_stat(good, 'startup_s')}{_stat(good, 'extract_s')}"
-            f"{_stat(good, 'download_s')}{_stat(good, 'cpu_s')}{_stat(good, 'sleep_s')}"
+            f"{url[-46:]:<46} {len(good):>2}/{len(group):<2} {size:6.2f} "
+            f"{good[0].files if good else 0:>5}  "
+            f"{f'{first.wall_s:5.2f}' if first else '  n/a'}                  "
+            f"{_stat(later, 'wall_s')}{_stat(later, 'extract_s')}{_stat(later, 'fetch_s')}"
         )
     worst_lag = max((r.max_loop_lag_ms for r in runs), default=0.0)
-    print(f"\nmax event-loop lag: {worst_lag:.1f} ms; runs: {len(runs)}")  # noqa: T201
+    print(  # noqa: T201
+        f"\nmax event-loop lag: {worst_lag:.1f} ms; runs: {len(runs)}; "
+        f"process CPU: {cpu:.2f} s; peak RSS: {cpu_after.ru_maxrss / 1024:.0f} MB"
+    )
 
     if args.json:
         payload = {"versions": versions, "config": config, "runs": [asdict(r) for r in runs]}

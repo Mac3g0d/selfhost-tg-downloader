@@ -78,7 +78,7 @@ no_implicit_optional = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["structlog.*"]
+module = ["structlog.*", "gallery_dl.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
