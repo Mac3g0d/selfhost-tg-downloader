@@ -118,14 +118,14 @@ The tests do not require Telegram or Instagram accounts. Settings are isolated a
 
 ## CI and releases
 
-[CI and release](.github/workflows/ci.yml) runs on GitHub-hosted Ubuntu runners for every PR opening, new commit, and reopening, and for pushes to `main`. There are no path filters. Tag pushes matching the version-shaped pattern also run the checks.
+[CI and release](.github/workflows/ci.yml) runs on GitHub-hosted Ubuntu runners for every PR opening, new commit, and reopening, and for pushes to `main`. There are no path filters, and new commits do not cancel earlier check runs. Independent tag pushes do not trigger this pipeline.
 
 1. **Build once:** create CI and runtime images using `uv sync --frozen`; export them as checksum-verified Actions artifacts retained for one day. Runtime dependencies are installed separately from developer tools.
 2. **Parallel jobs:** pytest (plus an installed-runtime import smoke test), mypy, Ruff lint/format, ty, Bandit, full-history Gitleaks, and Trivy against the actual runtime archive.
 3. **Security gate:** Trivy fails on HIGH or CRITICAL findings, including unfixed findings. Scanner/network failures also fail the job. There are no blanket security bypasses or `continue-on-error` steps.
-4. **Tag-only release:** after *every* check passes, a separate release job validates an exact `vX.Y.Z` tag against `pyproject.toml` and the installed runtime version, pushes the **same checked image without rebuilding** to GHCR, verifies its image ID, and creates a GitHub Release with its registry digest attached. Only that job has package/content write permissions.
+4. **Merged-main-only release:** after *every* check passes for that exact main SHA, the GitHub API must associate it with a PR merged into `main` whose `merge_commit_sha` matches. Direct pushes and open PRs cannot publish. The version in `pyproject.toml` determines `vX.Y.Z`; an existing release for that version is skipped. API errors fail closed. A separate release job verifies the installed runtime version, pushes the **same checked image without rebuilding** to GHCR, verifies its image ID, and creates the tag and GitHub Release at the checked main SHA with its registry digest attached. Only that job has package/content write permissions.
 
-Maintainers: update the project version and lockfile together in a reviewed PR; after merging, create and push the corresponding `vX.Y.Z` tag when ready to publish. Failed checks block publishing. Ordinary PRs and `main` pushes never publish, and the workflow never deploys anything. A release can only be exercised end-to-end by an explicitly authorized tag push; it is not simulated by unit-test success.
+Maintainers: update the project version and lockfile together in a reviewed PR, then merge when ready to publish. Successful checks for the merged main commit trigger publication automatically if that version has no release. An existing tag without a corresponding release is treated as an error requiring manual resolution rather than silently repointed. Configure branch protection to require PR review and checks as appropriate; this change does not modify repository protection. The workflow never deploys anything. Publication is intentionally not tested end-to-end from a PR, and unit-test success alone does not verify a real release.
 
 ## Limits and operational notes
 

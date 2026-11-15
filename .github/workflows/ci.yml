@@ -5,14 +5,9 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   build:
@@ -157,9 +152,36 @@ jobs:
           docker load -i .ci-artifacts/ci.tar
           docker run -v "$PWD/.ci-artifacts:/images:ro" downloader-ci:checked trivy image --input /images/runtime.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --timeout 10m
 
+  release-eligibility:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build, pytest, mypy, ruff, ty, bandit, gitleaks, trivy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      merged: ${{ steps.pr.outputs.merged }}
+    steps:
+      - name: Verify exact main SHA belongs to a merged PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq ".[] | select(.merged_at != null and .base.ref == \"main\" and .merge_commit_sha == \"$GITHUB_SHA\") | .number" > merged-prs.txt
+          if test -s merged-prs.txt; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No merged PR for this exact main SHA; publication is skipped."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [pytest, mypy, ruff, ty, bandit, gitleaks, trivy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-eligibility.outputs.merged == 'true'
+    needs: [build, pytest, mypy, ruff, ty, bandit, gitleaks, trivy, release-eligibility]
+    concurrency:
+      group: release-${{ github.repository }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -169,23 +191,42 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Resolve version and skip existing releases
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(python -c 'import re,tomllib; v=tomllib.load(open("pyproject.toml","rb"))["project"]["version"]; assert re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",v), "Expected X.Y.Z version"; print("v"+v)')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > published-tags.txt
+          if grep -Fxq "$tag" published-tags.txt; then
+            echo "Version $tag already has a release; skipping publication."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            # Refuse to reuse an unrelated tag; the release command creates a new one at this checked SHA.
+            existing=$(git ls-remote --tags origin "refs/tags/$tag")
+            test -z "$existing" || { echo "Tag $tag already exists without a release; resolve it manually."; exit 1; }
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.version.outputs.publish == 'true'
         with:
           name: checked-images
           path: .ci-artifacts
-      - name: Verify release tag and checked image version
+      - name: Verify checked runtime version
+        if: steps.version.outputs.publish == 'true'
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          python -c 'import os,re,tomllib; t=os.environ["RELEASE_TAG"]; assert re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", t), "Expected vX.Y.Z"; assert t[1:]==tomllib.load(open("pyproject.toml","rb"))["project"]["version"], "Tag/version mismatch"'
           (cd .ci-artifacts && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/runtime.tar
           version=$(docker run downloader-runtime:checked python -c 'import importlib.metadata; print(importlib.metadata.version("selfhost-tg-downloader"))')
           test "$RELEASE_TAG" = "v$version"
-      - name: Publish the same runtime image without rebuilding
+      - name: Publish the same runtime image and release checked main SHA
+        if: steps.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
@@ -194,5 +235,5 @@ jobs:
           docker pull "$image"
           test "$(docker image inspect "$image" --format '{{.Id}}')" = "$(docker image inspect downloader-runtime:checked --format '{{.Id}}')"
           docker image inspect "$image" --format '{{index .RepoDigests 0}}' > image-digest.txt
-          gh release create "$RELEASE_TAG" image-digest.txt --verify-tag --title "$RELEASE_TAG" --generate-notes
-          gh release view "$RELEASE_TAG" --json url,assets
+          gh release create "$RELEASE_TAG" image-digest.txt --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes
+          gh release view "$RELEASE_TAG" --json url,tagName,targetCommitish,assets
