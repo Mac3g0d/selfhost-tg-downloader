@@ -168,6 +168,7 @@ uv run --frozen ruff check src tests
 uv run --frozen ruff format --check src tests
 uv run --frozen ty check src tests
 uv run --frozen bandit -r src
+uv run --frozen flake8 src tests scripts
 ```
 
 For the containerized toolchain, build the CI target:
