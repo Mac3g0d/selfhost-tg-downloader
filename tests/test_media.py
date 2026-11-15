@@ -48,11 +48,13 @@ async def test_message_without_text_is_ignored(
 
 
 async def test_two_links_are_processed_in_order(
-    two_links: LinkPair, process_url: AsyncMock
+    two_link_message: LinkPair, process_url: AsyncMock
 ) -> None:
-    await on_message(two_links.message)
+    await on_message(two_link_message.message)
 
-    assert process_url.await_args_list == [call(two_links.message, url) for url in two_links.urls]
+    assert process_url.await_args_list == [
+        call(two_link_message.message, url) for url in two_link_message.urls
+    ]
 
 
 async def test_download_error_is_escaped_and_shortened(

@@ -151,7 +151,7 @@ def foreign_via_message(make_message: Callable[..., Message], supported_url: str
 
 
 @pytest.fixture
-def two_links(
+def two_link_message(
     make_message: Callable[..., Message], tiktok_url: str, instagram_url: str
 ) -> LinkPair:
     """A bound message with a TikTok link followed by an Instagram link."""
@@ -190,7 +190,7 @@ def is_video(request: pytest.FixtureRequest) -> bool:
 
 
 @pytest.fixture
-def work_dir(tmp_path: Path, faker: Faker) -> Path:
+def chat_work_dir(tmp_path: Path, faker: Faker) -> Path:
     """An existing work directory of a download."""
     directory = tmp_path / faker.pystr()
     directory.mkdir()
@@ -198,9 +198,9 @@ def work_dir(tmp_path: Path, faker: Faker) -> Path:
 
 
 @pytest.fixture
-def work_file(work_dir: Path, faker: Faker) -> Path:
+def work_file(chat_work_dir: Path, faker: Faker) -> Path:
     """A small non-empty file inside the work directory."""
-    path = work_dir / faker.pystr()
+    path = chat_work_dir / faker.pystr()
     size = faker.pyint(min_value=1, max_value=64)
     path.write_bytes(faker.binary(length=size))
     return path
@@ -217,16 +217,16 @@ def cache_item(is_video: bool, video_file_id: str, photo_file_id: str) -> dict[s
 @pytest.fixture
 def delivery_case(
     is_video: bool,
-    work_dir: Path,
+    chat_work_dir: Path,
     work_file: Path,
     cache_item: dict[str, str],
     serve_download: Callable[[DownloadResult], AsyncMock],
 ) -> DeliveryCase:
     """A successful download of one video or one photo kept in its own work directory."""
     media_file = MediaFileFactory.build(path=work_file, is_video=is_video)
-    outcome = DownloadResultFactory.build(media_files=[media_file], work_dir=work_dir)
+    outcome = DownloadResultFactory.build(media_files=[media_file], work_dir=chat_work_dir)
     method_type = SendVideo if is_video else SendPhoto
-    return DeliveryCase(serve_download(outcome), work_dir, method_type, cache_item)
+    return DeliveryCase(serve_download(outcome), chat_work_dir, method_type, cache_item)
 
 
 @pytest.fixture
