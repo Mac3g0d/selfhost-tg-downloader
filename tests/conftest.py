@@ -17,5 +17,5 @@ def _test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     from config import Settings, settings
 
     # Mutate the shared object, not the config module's binding: callers import it.
-    for name, value in Settings().model_dump().items():
-        monkeypatch.setattr(settings, name, value)
+    for name, field_value in Settings().model_dump().items():
+        monkeypatch.setattr(settings, name, field_value)

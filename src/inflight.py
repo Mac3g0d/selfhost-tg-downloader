@@ -17,5 +17,5 @@ async def url_lock(url: str) -> AsyncGenerator[None]:
     finally:
         _waiters[url] -= 1
         if not _waiters[url]:
-            del _waiters[url]
-            del _locks[url]
+            _waiters.pop(url)
+            _locks.pop(url)

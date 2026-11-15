@@ -35,7 +35,7 @@ def test_console_entry_point_imports() -> None:
 
 
 def test_installed_entry_point_outside_checkout(tmp_path: Path) -> None:
-    result = subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             "-I",
@@ -51,4 +51,4 @@ def test_installed_entry_point_outside_checkout(tmp_path: Path) -> None:
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "installed entry point OK"
+    assert completed.stdout.strip() == "installed entry point OK"

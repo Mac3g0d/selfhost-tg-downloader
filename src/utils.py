@@ -1,3 +1,4 @@
+# flake8: noqa: WPS100 -- module name is imported project-wide as `utils`
 from urllib.parse import urlparse, urlunparse
 
 

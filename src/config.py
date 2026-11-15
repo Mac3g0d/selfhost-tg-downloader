@@ -3,6 +3,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_TELEGRAM_LIMIT_MB = 50
+_TELEGRAM_FILE_LIMIT = _TELEGRAM_LIMIT_MB * 1024 * 1024
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -17,7 +20,7 @@ class Settings(BaseSettings):
     COOKIES_FILE: str = "cookies/instagram.txt"
     INSTAGRAM_USER: str = ""
     INSTAGRAM_PASS: str = ""
-    max_telegram_file_size: int = Field(default=50 * 1024 * 1024)
+    max_telegram_file_size: int = Field(default=_TELEGRAM_FILE_LIMIT)
     gallery_dl_bin: str = "gallery-dl"
     DOWNLOAD_TIMEOUT: int = 120
     USE_ARIA2: bool = False

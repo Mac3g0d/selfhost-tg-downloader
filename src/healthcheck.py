@@ -91,6 +91,7 @@ def _check_download_dir() -> None:
     else:
         try:
             path.mkdir(parents=True, exist_ok=True)
-            log.info("download_dir_created", path=str(path.resolve()))
         except OSError:
             log.error("download_dir_failed", path=str(path))
+        else:
+            log.info("download_dir_created", path=str(path.resolve()))
