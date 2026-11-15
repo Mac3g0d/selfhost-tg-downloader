@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import hashlib
 import secrets
@@ -147,11 +148,14 @@ async def _answer_supported_url(query: InlineQuery, bot: Bot, url: str, timer: S
 
     # Отправляем "спиннер" пользователю в личку, чтобы было видно активность
 
-    with timer.stage("chat_action"), contextlib.suppress(Exception):
-        await bot.send_chat_action(chat_id=query.from_user.id, action=ChatAction.UPLOAD_VIDEO)
+    async def show_activity() -> None:
+        with contextlib.suppress(Exception):
+            await bot.send_chat_action(chat_id=query.from_user.id, action=ChatAction.UPLOAD_VIDEO)
 
+    # The activity hint must not delay the download: run both at once.
+    result: DownloadResult
     with timer.stage("download"):
-        result: DownloadResult = await download_media(url)
+        result, _ = await asyncio.gather(download_media(url), show_activity())
 
     if not result.success:
         log.info("inline_timing", url=url, cache="miss", ok=False, **timer.summary())

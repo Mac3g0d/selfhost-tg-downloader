@@ -1,3 +1,4 @@
+import asyncio
 import re
 from contextlib import AsyncExitStack
 
@@ -7,7 +8,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 
 from config import settings
-from downloader.gallery import DownloadResult, cleanup, download_media
+from downloader.gallery import cleanup, download_media
 from inflight import url_lock
 from timing import StageTimer, new_request_id
 
@@ -63,16 +64,26 @@ async def _deliver_url(message: types.Message, url: str, timer: StageTimer) -> N
     if bot is None:
         raise RuntimeError("Message is not bound to a bot")
 
-    with timer.stage("status"):
-        status_msg = await message.reply("⏳ Скачиваю...")
-
+    async def announce() -> types.Message:
+        status = await message.reply("⏳ Скачиваю...")
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action=ChatAction.UPLOAD_VIDEO,
         )
+        return status
 
+    # The status message must not delay the download: run both at once.
     with timer.stage("download"):
-        result: DownloadResult = await download_media(url)
+        result, announced = await asyncio.gather(
+            download_media(url), announce(), return_exceptions=True
+        )
+    if isinstance(result, BaseException):
+        raise result
+    if isinstance(announced, BaseException):
+        if result.work_dir:
+            cleanup(result.work_dir)
+        raise announced
+    status_msg = announced
 
     if not result.success:
         log.info("message_timing", url=url, cache="miss", ok=False, **timer.summary())

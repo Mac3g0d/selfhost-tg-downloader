@@ -148,11 +148,12 @@ Two scripts reproduce the measurements without touching the production cache:
 # Download stage only: real downloads through the bot's downloader, first run and p50/p95 of later runs.
 uv run --frozen python scripts/bench_download.py --repeats 5 URL [URL ...]
 
-# Full inline path against a local fake Telegram API (no token needed), optional uplink limit.
-uv run --frozen python scripts/bench_e2e.py --uplink-mbit 10 --duplicates 3 URL [URL ...]
+# Full inline and chat paths against a local fake Telegram API (no token needed), with an
+# optional uplink limit and per-call latency; p50/p95 per stage over the repeats.
+uv run --frozen python scripts/bench_e2e.py --mode both --repeats 5 --uplink-mbit 10 --latency-ms 100 URL [URL ...]
 ```
 
-Both read the same settings as the bot (`COOKIES_FILE`, `DOWNLOAD_TIMEOUT`, ...) and print timings, sizes and counters only - never cookies or tokens. `bench_e2e.py` uses a temporary empty database, so the first request per URL is always a cache miss. Keep repeat counts low: each run is a real request to TikTok or Instagram.
+Both read the same settings as the bot (`COOKIES_FILE`, `DOWNLOAD_TIMEOUT`, ...) and print timings, sizes and counters only - never cookies or tokens. `bench_e2e.py` uses a temporary database emptied before every repeat, so the first request per URL is always a cache miss. Keep repeat counts low: each run is a real request to TikTok or Instagram.
 
 ## Local development and checks
 
