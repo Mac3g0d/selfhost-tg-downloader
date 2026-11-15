@@ -17,19 +17,53 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Build images once
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Prepare archive directories and daily package snapshot
+        id: prep
         run: |
-          docker build --target ci -t downloader-ci:checked .
-          docker build --target runtime -t downloader-runtime:checked .
-          mkdir -p .ci-artifacts
-          docker save downloader-ci:checked -o .ci-artifacts/ci.tar
-          docker save downloader-runtime:checked -o .ci-artifacts/runtime.tar
-          (cd .ci-artifacts && sha256sum ci.tar runtime.tar > SHA256SUMS)
+          mkdir -p .ci-artifacts/ci .ci-artifacts/runtime .ci-artifacts/scan
+          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Build images once
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        with:
+          source: .
+          files: docker-bake.hcl
+          provenance: false
+          vars: |
+            APK_REFRESH=${{ steps.prep.outputs.day }}
+          set: |
+            ci.cache-from=type=gha,scope=ci
+            ci.cache-to=type=gha,scope=ci,mode=max
+            ci.output=type=docker,dest=.ci-artifacts/ci/image.tar
+            runtime.cache-from=type=gha,scope=runtime
+            runtime.cache-to=type=gha,scope=runtime,mode=max
+            runtime.output=type=docker,dest=.ci-artifacts/runtime/image.tar
+            scan.cache-from=type=gha,scope=scan
+            scan.cache-to=type=gha,scope=scan,mode=max
+            scan.output=type=docker,dest=.ci-artifacts/scan/image.tar
+      - name: Checksum image archives
+        run: |
+          for image in ci runtime scan; do
+            (cd ".ci-artifacts/$image" && sha256sum image.tar > SHA256SUMS)
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts/
-          include-hidden-files: true
+          name: image-ci
+          path: .ci-artifacts/ci/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-runtime
+          path: .ci-artifacts/runtime/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-scan
+          path: .ci-artifacts/scan/
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
@@ -41,17 +75,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-ci
+          path: .ci-artifacts/ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-runtime
+          path: .ci-artifacts/runtime
       - name: Verify and load CI image
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
+          (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/ci/image.tar
       - name: pytest
         run: docker run downloader-ci:checked pytest -q -o tmp_path_retention_policy=all
       - name: Installed runtime import smoke test
         run: |
-          docker load -i .ci-artifacts/runtime.tar
+          (cd .ci-artifacts/runtime && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/runtime/image.tar
           docker run -e TELEGRAM_BOT_TOKEN=test-token downloader-runtime:checked python -c 'import tg_downloader, bot; import importlib.metadata; print(importlib.metadata.version("selfhost-tg-downloader"))'
           docker run downloader-runtime:checked python -c 'import subprocess; p="/app/downloads/ci-smoke.mp4"; subprocess.run(["ffmpeg","-v","error","-f","lavfi","-i","color=c=black:s=16x16:d=0.1","-c:v","mpeg4",p],check=True); result=subprocess.check_output(["ffprobe","-v","error","-show_entries","stream=codec_type","-of","csv=p=0",p],text=True).strip(); assert result=="video",result; print("FFmpeg offline encode/probe: PASS")'
 
@@ -62,12 +101,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-ci
+          path: .ci-artifacts/ci
       - name: Verify and load CI image
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
+          (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/ci/image.tar
       - name: mypy
         run: docker run downloader-ci:checked mypy src tests
 
@@ -78,12 +117,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-ci
+          path: .ci-artifacts/ci
       - name: Verify and load CI image
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
+          (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/ci/image.tar
       - name: ruff
         run: docker run downloader-ci:checked sh -ec "ruff check src tests && ruff format --check src tests"
 
@@ -94,12 +133,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-ci
+          path: .ci-artifacts/ci
       - name: Verify and load CI image
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
+          (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/ci/image.tar
       - name: ty
         run: docker run downloader-ci:checked ty check src tests
 
@@ -110,12 +149,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-ci
+          path: .ci-artifacts/ci
       - name: Verify and load CI image
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
+          (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/ci/image.tar
       - name: bandit
         run: docker run downloader-ci:checked bandit -r src
 
@@ -130,13 +169,13 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-scan
+          path: .ci-artifacts/scan
       - name: Scan complete git history
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
-          docker run -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro" downloader-ci:checked gitleaks git /repo --log-opts="--all" --redact --verbose
+          (cd .ci-artifacts/scan && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/scan/image.tar
+          docker run -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro" downloader-scan:checked gitleaks git /repo --log-opts="--all" --redact --verbose
 
   trivy:
     needs: build
@@ -145,13 +184,18 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-scan
+          path: .ci-artifacts/scan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-runtime
+          path: .ci-artifacts/runtime
       - name: Scan actual runtime image (including unfixed vulnerabilities)
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/ci.tar
-          docker run -v "$PWD/.ci-artifacts:/images:ro" downloader-ci:checked trivy image --input /images/runtime.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --timeout 10m
+          (cd .ci-artifacts/runtime && sha256sum --check SHA256SUMS)
+          (cd .ci-artifacts/scan && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/scan/image.tar
+          docker run -v "$PWD/.ci-artifacts/runtime:/images:ro" downloader-scan:checked trivy image --input /images/image.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --timeout 10m
 
   release-eligibility:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -212,15 +256,15 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.version.outputs.publish == 'true'
         with:
-          name: checked-images
-          path: .ci-artifacts
+          name: image-runtime
+          path: .ci-artifacts/runtime
       - name: Verify checked runtime version
         if: steps.version.outputs.publish == 'true'
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          (cd .ci-artifacts && sha256sum --check SHA256SUMS)
-          docker load -i .ci-artifacts/runtime.tar
+          (cd .ci-artifacts/runtime && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/runtime/image.tar
           version=$(docker run downloader-runtime:checked python -c 'import importlib.metadata; print(importlib.metadata.version("selfhost-tg-downloader"))')
           test "$RELEASE_TAG" = "v$version"
       - name: Publish the same runtime image and release checked main SHA

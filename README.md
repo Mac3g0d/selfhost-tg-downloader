@@ -171,15 +171,18 @@ uv run --frozen bandit -r src
 uv run --frozen flake8 src tests scripts
 ```
 
-For the containerized toolchain, build the CI target:
+For the containerized toolchain, build the CI target (developer tools) and the scan target (Gitleaks and Trivy):
 
 ```bash
 docker build --target ci -t selfhost-tg-downloader:ci .
+docker build --target scan -t selfhost-tg-downloader:scan .
 docker run selfhost-tg-downloader:ci pytest -q -o tmp_path_retention_policy=all
-docker run -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro" selfhost-tg-downloader:ci gitleaks git /repo --log-opts="--all" --redact
+docker run -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro" selfhost-tg-downloader:scan gitleaks git /repo --log-opts="--all" --redact
 docker save selfhost-tg-downloader:local -o runtime.tar
-docker run -v "$PWD:/images:ro" selfhost-tg-downloader:ci trivy image --input /images/runtime.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1
+docker run -v "$PWD:/images:ro" selfhost-tg-downloader:scan trivy image --input /images/runtime.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1
 ```
+
+`docker buildx bake -f docker-bake.hcl` builds all three images (CI, runtime, scan) in one invocation, exactly as the pipeline does.
 
 These commands are checks to run, not a promise that every security gate is currently green. Tests isolate settings and mock destructive cleanup. Use isolated data, never production state.
 
@@ -205,7 +208,7 @@ Startup diagnostics report configuration paths, authentication availability, and
 
 [CI and release](.github/workflows/ci.yml) runs on GitHub-hosted Ubuntu runners for every PR opening, new commit, and reopening, and for pushes to `main`. There are no path filters, and new commits do not cancel earlier check runs. Independent tag pushes do not trigger this pipeline.
 
-1. **Build once:** create CI and runtime images using `uv sync --frozen`; export them as checksum-verified Actions artifacts retained for one day. Runtime dependencies are installed separately from developer tools.
+1. **Build once:** one `docker buildx bake` invocation creates the CI, runtime, and scan images using `uv sync --frozen`; each is exported as its own checksum-verified Actions artifact retained for one day, so a job downloads only the image it runs. Runtime dependencies are installed separately from developer tools, and the scanners are in neither image. Unchanged layers are restored from the Actions cache; the OS package layer is rebuilt at least once per UTC day so cached builds do not keep outdated packages.
 2. **Parallel jobs:** pytest (plus an installed-runtime import smoke test), mypy, Ruff lint/format, ty, Bandit, full-history Gitleaks, and Trivy against the actual runtime archive.
 3. **Security gate:** Trivy fails on HIGH or CRITICAL findings, including unfixed findings. Scanner/network failures also fail the job. There are no blanket security bypasses or `continue-on-error` steps.
 4. **Merged-main-only release:** after *every* check passes for that exact main SHA, the GitHub API must associate it with a PR merged into `main` whose `merge_commit_sha` matches. Direct pushes and open PRs cannot publish. The version in `pyproject.toml` determines `vX.Y.Z`; an existing release for that version is skipped. API errors fail closed. A separate release job verifies the installed runtime version, pushes the **same checked image without rebuilding** to GHCR, verifies its image ID, and creates the tag and GitHub Release at the checked main SHA with its registry digest attached. Only that job has package/content write permissions.
