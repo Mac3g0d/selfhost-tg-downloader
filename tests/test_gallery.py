@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -8,11 +9,18 @@ from gallery_dl import config as gdl_config
 from pytest_mock import MockerFixture
 
 from config import settings
-from downloader import gallery
-from downloader.gallery import _apply_settings, _Job, cleanup, download_media
+from downloader.gallery import _apply_settings, _Job, _run_job, cleanup, download_media
 
 INSTAGRAM = ("extractor", "instagram")
 POST_URL = "https://www.instagram.com/p/ABCDEFGHIJK"
+RUN_JOB = "downloader.gallery._run_job"
+CLEANUP_WAIT_SECONDS = 1
+
+
+def _wait_until_empty(directory: Path) -> None:
+    deadline = time.monotonic() + CLEANUP_WAIT_SECONDS
+    while any(directory.iterdir()) and time.monotonic() < deadline:
+        time.sleep(0.01)
 
 
 @pytest.fixture(autouse=True)
@@ -115,27 +123,27 @@ async def test_successful_download_returns_files_and_timings(
         (work_dir / "clip.mp4").write_bytes(b"video")
         return 0, "", None
 
-    mocker.patch.object(gallery, "_run_job", side_effect=fake_job)
+    mocker.patch(RUN_JOB, side_effect=fake_job)
 
-    result = await download_media(POST_URL)
+    outcome = await download_media(POST_URL)
 
-    assert result.success
-    assert [item.path.name for item in result.media_files] == ["clip.mp4"]
-    assert result.timings["download_ms"] >= 0
-    assert result.work_dir is not None
-    cleanup(result.work_dir)
+    assert outcome.success
+    assert [media.path.name for media in outcome.media_files] == ["clip.mp4"]
+    assert outcome.timings["download_ms"] >= 0
+    assert outcome.work_dir is not None
+    cleanup(outcome.work_dir)
 
 
 async def test_failed_download_reports_gallery_dl_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
 ) -> None:
     monkeypatch.setattr(settings, "DOWNLOAD_DIR", str(tmp_path))
-    mocker.patch.object(gallery, "_run_job", return_value=(4, "[instagram][error] boom", None))
+    mocker.patch(RUN_JOB, return_value=(4, "[instagram][error] boom", None))
 
-    result = await download_media(POST_URL)
+    outcome = await download_media(POST_URL)
 
-    assert not result.success
-    assert result.error == "[instagram][error] boom"
+    assert not outcome.success
+    assert outcome.error == "[instagram][error] boom"
     assert list(tmp_path.iterdir()) == []
 
 
@@ -148,12 +156,12 @@ async def test_partial_download_is_a_failure(
         (work_dir / "first.jpg").write_bytes(b"photo")
         return 4, "[download][error] Failed to download second.jpg", None
 
-    mocker.patch.object(gallery, "_run_job", side_effect=partial_job)
+    mocker.patch(RUN_JOB, side_effect=partial_job)
 
-    result = await download_media(POST_URL)
+    outcome = await download_media(POST_URL)
 
-    assert not result.success
-    assert "second.jpg" in result.error
+    assert not outcome.success
+    assert "second.jpg" in outcome.error
     assert list(tmp_path.iterdir()) == []
 
 
@@ -170,22 +178,19 @@ async def test_timeout_cancels_job_and_cleans_up_after_it_stops(
         stopped.set()
         return 1, "", None
 
-    mocker.patch.object(gallery, "_run_job", side_effect=slow_job)
+    mocker.patch(RUN_JOB, side_effect=slow_job)
 
-    result = await download_media(POST_URL)
+    outcome = await download_media(POST_URL)
 
-    assert not result.success
-    assert "timed out" in result.error
+    assert not outcome.success
+    assert "timed out" in outcome.error
     assert stopped.wait(timeout=5)
-    for _ in range(100):
-        if not list(tmp_path.iterdir()):
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.to_thread(_wait_until_empty, tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
 def test_unsupported_url_is_reported(tmp_path: Path) -> None:
-    status, error, first_file_at = gallery._run_job(
+    status, error, first_file_at = _run_job(
         "https://example.com/nothing", tmp_path, threading.Event()
     )
 

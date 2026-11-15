@@ -4,6 +4,9 @@ import pytest
 
 from downloader.gallery import MediaFile, _collect_media
 
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi")
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
 
 @pytest.fixture
 def media_dir(tmp_path: Path) -> Path:
@@ -17,8 +20,8 @@ def test_collect_media_finds_video_and_image(media_dir: Path) -> None:
     files = _collect_media(media_dir)
     assert len(files) == 2
 
-    videos = [f for f in files if f.is_video]
-    images = [f for f in files if not f.is_video]
+    videos = [media for media in files if media.is_video]
+    images = [media for media in files if not media.is_video]
     assert len(videos) == 1
     assert len(images) == 1
     assert videos[0].path.suffix == ".mp4"
@@ -44,24 +47,19 @@ def test_collect_media_nested_dirs(tmp_path: Path) -> None:
 
     files = _collect_media(tmp_path)
     assert len(files) == 2
-    suffixes = {f.path.suffix for f in files}
+    suffixes = {media.path.suffix for media in files}
     assert suffixes == {".mov", ".png"}
 
 
 def test_collect_media_all_extensions(tmp_path: Path) -> None:
-    video_exts = [".mp4", ".mov", ".mkv", ".webm", ".avi"]
-    image_exts = [".jpg", ".jpeg", ".png", ".webp"]
-
-    for ext in video_exts:
-        (tmp_path / f"file{ext}").write_bytes(b"\x00")
-    for ext in image_exts:
+    for ext in VIDEO_EXTS + IMAGE_EXTS:
         (tmp_path / f"file{ext}").write_bytes(b"\x00")
 
     files = _collect_media(tmp_path)
-    videos = [f for f in files if f.is_video]
-    images = [f for f in files if not f.is_video]
-    assert len(videos) == len(video_exts)
-    assert len(images) == len(image_exts)
+    videos = [media for media in files if media.is_video]
+    images = [media for media in files if not media.is_video]
+    assert len(videos) == len(VIDEO_EXTS)
+    assert len(images) == len(IMAGE_EXTS)
 
 
 def test_collect_media_ignores_unknown_extensions(tmp_path: Path) -> None:
