@@ -3,15 +3,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     container_name: tg-downloader-bot
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      - DOWNLOAD_DIR=/tmp/tg-downloads
+      - DOWNLOAD_DIR=/app/downloads
       - COOKIES_FILE=/app/cookies/instagram.txt
     volumes:
-      - downloads:/tmp/tg-downloads
+      - downloads:/app/downloads
+      - database:/app/data
       - ./cookies:/app/cookies:ro
     logging:
       driver: json-file
@@ -20,5 +22,7 @@ services:
         max-file: "3"
 
 volumes:
+  database:
+    driver: local
   downloads:
     driver: local
