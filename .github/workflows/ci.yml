@@ -140,7 +140,7 @@ jobs:
         run: |
           (cd .ci-artifacts && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/ci.tar
-          docker run -v "$PWD:/repo:ro" downloader-ci:checked gitleaks git /repo --log-opts="--all" --redact --verbose
+          docker run -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro" downloader-ci:checked gitleaks git /repo --log-opts="--all" --redact --verbose
 
   trivy:
     needs: build
