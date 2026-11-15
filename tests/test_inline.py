@@ -29,10 +29,12 @@ from database import (
 from downloader.gallery import DownloadResult, MediaFile
 from handlers import inline
 from handlers.inline import (
+    PAGE_PREFIX,
     PLACEHOLDER_PREFIX,
     REFRESH_PREFIX,
     _link_key,
     on_inline_query,
+    on_page,
     on_placeholder_sent,
     on_refresh,
 )
@@ -152,7 +154,10 @@ async def test_sent_placeholder_is_replaced_with_video(
     media = bot.edit_message_media.call_args.args[0]
     assert isinstance(media, InputMediaVideo)
     assert media.media == "video-id"
-    assert bot.edit_message_media.call_args.kwargs == {"inline_message_id": "msg-1"}
+    assert bot.edit_message_media.call_args.kwargs == {
+        "inline_message_id": "msg-1",
+        "reply_markup": None,
+    }
     bot.edit_message_reply_markup.assert_awaited_once_with(inline_message_id="msg-1")
     assert await get_cached_media(URL) == [{"type": "video", "file_id": "video-id"}]
     assert not (tmp_path / "work").exists()
@@ -174,7 +179,11 @@ async def test_carousel_placeholder_becomes_first_file_and_caches_all(
 
     media = bot.edit_message_media.call_args.args[0]
     assert isinstance(media, InputMediaPhoto)
-    assert media.caption == "1 из 2"
+    assert media.caption is None
+    row = bot.edit_message_media.call_args.kwargs["reply_markup"].inline_keyboard[0]
+    assert [button.text for button in row] == ["◀️", "1 / 2", "▶️"]
+    assert row[2].callback_data == f"{PAGE_PREFIX}{_link_key(URL)}:1"
+    bot.edit_message_reply_markup.assert_not_called()
     cached = await get_cached_media(URL)
     assert cached is not None
     assert len(cached) == 2
@@ -276,3 +285,48 @@ async def test_keyboard_already_removed_is_not_an_error(
 
     bot.edit_message_media.assert_awaited_once()
     assert all("❌" not in call.args[0] for call in bot.edit_message_text.call_args_list)
+
+
+def _page_callback(bot: Any, data: str) -> CallbackQuery:
+    return CallbackQuery(
+        id="9", from_user=USER, chat_instance="x", data=data, inline_message_id="msg-3"
+    ).as_(bot)
+
+
+async def test_pager_flips_to_requested_file_and_wraps(bot: Any) -> None:
+    key = _link_key(URL)
+    await save_inline_link(key, URL)
+    await set_cached_media(
+        URL,
+        [{"type": "photo", "file_id": "first"}, {"type": "video", "file_id": "second"}],
+    )
+
+    await on_page(_page_callback(bot, f"{PAGE_PREFIX}{key}:1"), bot)
+
+    media = bot.edit_message_media.call_args.args[0]
+    assert isinstance(media, InputMediaVideo)
+    assert media.media == "second"
+    row = bot.edit_message_media.call_args.kwargs["reply_markup"].inline_keyboard[0]
+    assert row[1].text == "2 / 2"
+    assert row[2].callback_data == f"{PAGE_PREFIX}{key}:0"
+
+
+async def test_cached_carousel_results_carry_the_pager(bot: Any) -> None:
+    await set_cached_media(
+        URL, [{"type": "photo", "file_id": "first"}, {"type": "photo", "file_id": "second"}]
+    )
+
+    await on_inline_query(_query(bot), bot)
+
+    second = _answer(bot).results[1]
+    assert second.reply_markup is not None
+    assert second.reply_markup.inline_keyboard[0][1].text == "2 / 2"
+
+
+async def test_pager_for_forgotten_post_asks_to_resend(bot: Any) -> None:
+    await on_page(_page_callback(bot, f"{PAGE_PREFIX}missing:1"), bot)
+
+    bot.edit_message_media.assert_not_called()
+    (answer,) = [c.args[0] for c in bot.call_args_list]
+    assert isinstance(answer, AnswerCallbackQuery)
+    assert answer.show_alert is True

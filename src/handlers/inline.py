@@ -46,6 +46,8 @@ router = Router(name="inline")
 # with a placeholder message that is replaced by the media when it is ready.
 PLACEHOLDER_PREFIX = "w:"
 REFRESH_PREFIX = "r:"
+PAGE_PREFIX = "g:"
+PAGE_NOOP = "g:-"
 TEXT_DOWNLOADING = "⏳ Скачиваю…"
 TEXT_UPLOADING = "⬆️ Загружаю в Telegram…"
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
@@ -127,25 +129,57 @@ def _refresh_keyboard(key: str, text: str = "🔄 Обновить") -> InlineKe
     )
 
 
+def _pager(key: str, index: int, total: int) -> InlineKeyboardMarkup | None:
+    """Buttons to flip through a multi-file post inside one message.
+
+    An inline message holds a single media and cannot become an album, so the
+    other files are reached by replacing the media in place.
+    """
+    if total < 2:
+        return None
+    previous_page = f"{PAGE_PREFIX}{key}:{(index - 1) % total}"
+    next_page = f"{PAGE_PREFIX}{key}:{(index + 1) % total}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="◀️", callback_data=previous_page),
+                InlineKeyboardButton(text=f"{index + 1} / {total}", callback_data=PAGE_NOOP),
+                InlineKeyboardButton(text="▶️", callback_data=next_page),
+            ]
+        ]
+    )
+
+
+def _input_media(item: dict[str, Any]) -> InputMediaVideo | InputMediaPhoto:
+    if item["type"] == "video":
+        return InputMediaVideo(media=item["file_id"], supports_streaming=True)
+    return InputMediaPhoto(media=item["file_id"])
+
+
 def _status_text(status: str, url: str) -> str:
     return f"{status}\n🔗 {url}"
 
 
 def _cached_results(url: str, items: list[dict[str, Any]]) -> list[InlineQueryResultUnion]:
+    key = _link_key(url)
     results: list[InlineQueryResultUnion] = []
     for i, item in enumerate(items):
         result_id = hashlib.sha256(f"{url}:{i}".encode()).hexdigest()[:16]
+        pager = _pager(key, i, len(items))
         if item["type"] == "video":
             results.append(
                 InlineQueryResultCachedVideo(
                     id=result_id,
                     video_file_id=item["file_id"],
                     title=secrets.choice(TITLES),
+                    reply_markup=pager,
                 )
             )
         else:
             results.append(
-                InlineQueryResultCachedPhoto(id=result_id, photo_file_id=item["file_id"])
+                InlineQueryResultCachedPhoto(
+                    id=result_id, photo_file_id=item["file_id"], reply_markup=pager
+                )
             )
     return results
 
@@ -342,19 +376,14 @@ async def _deliver(bot: Bot, inline_message_id: str, url: str, user: User) -> No
                 finally:
                     uploading.cancel()
 
-        first = items[0]
-        caption = f"1 из {len(items)}" if len(items) > 1 else None
-        media: InputMediaVideo | InputMediaPhoto
-        if first["type"] == "video":
-            media = InputMediaVideo(
-                media=first["file_id"], caption=caption, supports_streaming=True
-            )
-        else:
-            media = InputMediaPhoto(media=first["file_id"], caption=caption)
+        pager = _pager(key, 0, len(items))
         with timer.stage("edit"):
-            await bot.edit_message_media(media, inline_message_id=inline_message_id)
-            with contextlib.suppress(TelegramBadRequest):
-                await bot.edit_message_reply_markup(inline_message_id=inline_message_id)
+            await bot.edit_message_media(
+                _input_media(items[0]), inline_message_id=inline_message_id, reply_markup=pager
+            )
+            if pager is None:
+                with contextlib.suppress(TelegramBadRequest):
+                    await bot.edit_message_reply_markup(inline_message_id=inline_message_id)
         ok = True
     except DeliveryError as exc:
         ok = False
@@ -403,3 +432,27 @@ async def on_refresh(callback: CallbackQuery, bot: Bot) -> None:
         return
     await callback.answer("Проверяю…")
     await _deliver(bot, callback.inline_message_id, url, callback.from_user)
+
+
+@router.callback_query(F.data == PAGE_NOOP)
+async def on_page_counter(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(PAGE_PREFIX))
+async def on_page(callback: CallbackQuery, bot: Bot) -> None:
+    key, _, page = (callback.data or "").removeprefix(PAGE_PREFIX).rpartition(":")
+    url = await get_inline_link(key)
+    items = await get_cached_media(url) if url else None
+    if not items or not callback.inline_message_id or not page.isdigit():
+        await callback.answer("Пост больше недоступен, отправь ссылку заново", show_alert=True)
+        return
+
+    index = int(page) % len(items)
+    with contextlib.suppress(TelegramBadRequest):
+        await bot.edit_message_media(
+            _input_media(items[index]),
+            inline_message_id=callback.inline_message_id,
+            reply_markup=_pager(key, index, len(items)),
+        )
+    await callback.answer()
