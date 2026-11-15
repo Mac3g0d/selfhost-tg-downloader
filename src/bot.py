@@ -3,8 +3,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from config import settings
-from handlers import inline_router, media_router, start_router
+from src.config import settings
+from src.handlers import inline_router, media_router, start_router
 
 log = structlog.get_logger()
 

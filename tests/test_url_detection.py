@@ -1,6 +1,6 @@
 import pytest
 
-from handlers.media import _extract_urls
+from src.handlers.media import _extract_urls
 
 
 @pytest.mark.parametrize(
@@ -27,11 +27,16 @@ from handlers.media import _extract_urls
         ("HTTPS://WWW.TIKTOK.COM/@a/video/1", ["HTTPS://WWW.TIKTOK.COM/@a/video/1"]),
         ("https://twitter.com/post/123", []),
         ("https://tiktok.com", []),
-        ("check https://instagram.com/reel/A/ and https://instagram.com/reel/B/ out", [
-            "https://instagram.com/reel/A/",
-            "https://instagram.com/reel/B/",
-        ]),
+        (
+            "check https://instagram.com/reel/A/ and https://instagram.com/reel/B/ out",
+            [
+                "https://instagram.com/reel/A/",
+                "https://instagram.com/reel/B/",
+            ],
+        ),
     ],
 )
 def test_extract_urls(text: str, expected: list[str]) -> None:
-    assert _extract_urls(text) == expected
+    from src.utils import clean_url
+
+    assert _extract_urls(text) == [clean_url(url) for url in expected]

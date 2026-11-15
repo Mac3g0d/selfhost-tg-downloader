@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,7 +13,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     BUFFER_CHAT_ID: int = 0
     DATABASE_PATH: str = "data/cache.db"
-    DOWNLOAD_DIR: str = "/tmp/tg-downloads"
+    DOWNLOAD_DIR: str = str(Path.home() / ".cache" / "tg-downloads")
     COOKIES_FILE: str = "cookies/instagram.txt"
     INSTAGRAM_USER: str = ""
     INSTAGRAM_PASS: str = ""

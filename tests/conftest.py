@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-for-ci")
+
 from collections.abc import Iterator
 from unittest.mock import patch
 
@@ -12,7 +16,7 @@ def _test_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("INSTAGRAM_PASS", "")
     monkeypatch.setenv("BUFFER_CHAT_ID", "0")
 
-    import config
+    from src import config
 
-    with patch.object(config, "settings", config.Settings()):
+    with patch.dict(config.settings.__dict__, config.Settings().model_dump()):
         yield

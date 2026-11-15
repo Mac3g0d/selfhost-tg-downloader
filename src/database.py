@@ -5,7 +5,7 @@ from typing import Any
 import aiosqlite
 import structlog
 
-from config import settings
+from src.config import settings
 
 log = structlog.get_logger()
 

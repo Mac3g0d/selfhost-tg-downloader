@@ -5,8 +5,8 @@ from aiogram import Router, types
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 
-from config import settings
-from downloader.gallery import DownloadResult, cleanup, download_media
+from src.config import settings
+from src.downloader.gallery import DownloadResult, cleanup, download_media
 
 log = structlog.get_logger()
 
@@ -17,13 +17,13 @@ URL_PATTERN: re.Pattern[str] = re.compile(
     r"(?:www\.|vm\.|vt\.|p\.|m\.)?tiktok\.com"
     r"|(?:www\.)?instagram\.com"
     r"|(?:www\.)?instagr\.am"
-    r")/[\w\-./?%&=+]*",
+    r")/[\w@\-./?%&=+]*",
     re.IGNORECASE,
 )
 
 
 def _extract_urls(text: str) -> list[str]:
-    from utils import clean_url
+    from src.utils import clean_url
 
     return [clean_url(u.strip()) for u in URL_PATTERN.findall(text)]
 
@@ -32,7 +32,7 @@ async def _process_url(message: types.Message, url: str) -> None:
     user_id = message.from_user.id if message.from_user else "unknown"
     log.info("processing_url", url=url, user_id=user_id, chat_id=message.chat.id)
 
-    from database import get_cached_media, set_cached_media
+    from src.database import get_cached_media, set_cached_media
 
     cached_data = await get_cached_media(url)
     if cached_data:
@@ -46,7 +46,10 @@ async def _process_url(message: types.Message, url: str) -> None:
 
     status_msg = await message.reply("⏳ Скачиваю...")
 
-    await message.bot.send_chat_action(  # type: ignore[union-attr]
+    bot = message.bot
+    if bot is None:
+        raise RuntimeError("Message is not bound to a bot")
+    await bot.send_chat_action(
         chat_id=message.chat.id,
         action=ChatAction.UPLOAD_VIDEO,
     )

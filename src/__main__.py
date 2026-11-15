@@ -4,8 +4,8 @@ import sys
 
 import structlog
 
-from bot import create_bot, create_dispatcher
-from healthcheck import run_healthchecks
+from src.bot import create_bot, create_dispatcher
+from src.healthcheck import run_healthchecks
 
 log = structlog.get_logger()
 
@@ -53,7 +53,7 @@ def main() -> None:
     _configure_logging()
 
     run_healthchecks()
-    from database import init_db
+    from src.database import init_db
 
     asyncio.run(init_db())
 

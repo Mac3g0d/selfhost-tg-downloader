@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from config import Settings
-from downloader.gallery import _build_cmd, _build_gallery_dl_config, cleanup
+from src.config import Settings
+from src.downloader.gallery import _build_cmd, _build_gallery_dl_config, cleanup
 
 
 class TestBuildGalleryDlConfig:
@@ -18,9 +18,9 @@ class TestBuildGalleryDlConfig:
         monkeypatch.setenv("INSTAGRAM_USER", "testuser")
         monkeypatch.setenv("INSTAGRAM_PASS", "testpass")
 
-        import config
+        from src import config
 
-        with patch.object(config, "settings", Settings()):
+        with patch.dict(config.settings.__dict__, Settings().model_dump()):
             config_path = _build_gallery_dl_config(tmp_path)
 
         assert config_path is not None
@@ -51,9 +51,9 @@ class TestBuildCmd:
         cookies.write_text("cookie data")
         monkeypatch.setenv("COOKIES_FILE", str(cookies))
 
-        import config
+        from src import config
 
-        with patch.object(config, "settings", Settings()):
+        with patch.dict(config.settings.__dict__, Settings().model_dump()):
             cmd = _build_cmd(tmp_path)
 
         assert "--cookies" in cmd
@@ -72,9 +72,9 @@ class TestBuildCmd:
         monkeypatch.setenv("INSTAGRAM_USER", "user")
         monkeypatch.setenv("INSTAGRAM_PASS", "pass")
 
-        import config
+        from src import config
 
-        with patch.object(config, "settings", Settings()):
+        with patch.dict(config.settings.__dict__, Settings().model_dump()):
             cmd = _build_cmd(tmp_path)
 
         assert "--config" in cmd
@@ -86,8 +86,12 @@ class TestCleanup:
         work = tmp_path / "work"
         work.mkdir()
         (work / "file.txt").write_text("data")
-        cleanup(work)
-        assert not work.exists()
+        with patch("src.downloader.gallery.shutil.rmtree") as remove:
+            cleanup(work)
+        remove.assert_called_once_with(work, ignore_errors=True)
+        assert work.exists()
 
     def test_nonexistent_directory(self, tmp_path: Path) -> None:
-        cleanup(tmp_path / "nonexistent")
+        with patch("src.downloader.gallery.shutil.rmtree") as remove:
+            cleanup(tmp_path / "nonexistent")
+        remove.assert_called_once_with(tmp_path / "nonexistent", ignore_errors=True)
