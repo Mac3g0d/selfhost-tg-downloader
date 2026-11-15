@@ -13,11 +13,8 @@ from gallery_dl import extractor as gdl_extractor
 from gallery_dl.job import DownloadJob
 
 from config import settings
+from constants import CANCELLED_STATUS, INSTAGRAM_PATH, UNSUPPORTED_URL_STATUS, WORKER_PREFIX
 
-WORKER_PREFIX = "gallery-dl"
-UNSUPPORTED_URL_STATUS = 64
-CANCELLED_STATUS = 1
-_INSTAGRAM = ("extractor", "instagram")
 FirstFileAt = float | None
 
 
@@ -127,14 +124,14 @@ class _Setup:
         # gallery-dl spaces Instagram requests 6-12 s apart within one process.
         # Every download used to be a fresh process, which never waited; keep
         # that behaviour unless the user's own gallery-dl config says otherwise.
-        if gdl_config.get(_INSTAGRAM, "sleep-request") is None:
-            gdl_config.set(_INSTAGRAM, "sleep-request", 0)
+        if gdl_config.get(INSTAGRAM_PATH, "sleep-request") is None:
+            gdl_config.set(INSTAGRAM_PATH, "sleep-request", 0)
 
         # Without yt-dlp gallery-dl first fails to open the DASH manifest and
         # then falls back to the plain video URL; ask for that URL directly.
         has_ytdl = find_spec("yt_dlp") is not None or find_spec("youtube_dl") is not None
-        if not has_ytdl and gdl_config.get(_INSTAGRAM, "videos") is None:
-            gdl_config.set(_INSTAGRAM, "videos", "merged")
+        if not has_ytdl and gdl_config.get(INSTAGRAM_PATH, "videos") is None:
+            gdl_config.set(INSTAGRAM_PATH, "videos", "merged")
 
     def _lock_extractor_lookup(self) -> None:
         # Extractor lookup lazily imports modules through one shared generator,
@@ -156,12 +153,12 @@ def apply_settings() -> None:
     gdl_config.set(("output",), "mode", "null")
 
     if settings.INSTAGRAM_USER and settings.INSTAGRAM_PASS:
-        gdl_config.set(_INSTAGRAM, "username", settings.INSTAGRAM_USER)
-        gdl_config.set(_INSTAGRAM, "password", settings.INSTAGRAM_PASS)
+        gdl_config.set(INSTAGRAM_PATH, "username", settings.INSTAGRAM_USER)
+        gdl_config.set(INSTAGRAM_PATH, "password", settings.INSTAGRAM_PASS)
         gdl_config.unset((), "cookies")
     else:
-        gdl_config.unset(_INSTAGRAM, "username")
-        gdl_config.unset(_INSTAGRAM, "password")
+        gdl_config.unset(INSTAGRAM_PATH, "username")
+        gdl_config.unset(INSTAGRAM_PATH, "password")
         if settings.COOKIES_FILE and Path(settings.COOKIES_FILE).is_file():
             gdl_config.set((), "cookies", settings.COOKIES_FILE)
         else:

@@ -5,19 +5,16 @@ import contextlib
 from typing import Any
 
 import structlog
-from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram import Bot, exceptions
 from aiogram.types import Message
 
 import database
+from constants import SEND_FAILED_TEXT, TEXT_DOWNLOADING, UPLOAD_ACTION
 from downloader.gallery import DownloadResult, cleanup, download_media
 from handlers.inline_ui import failure_text
 from handlers.sending import reply_cached_item, send_all
 from timing import StageTimer
 
-_UPLOAD_ACTION = "upload_video"
-_STATUS_TEXT = "⏳ Голова, терпани малеха, качаю"
-_SEND_FAILED_TEXT = "❌ Ошибка при отправке файла в Telegram."
 log = structlog.get_logger()
 
 
@@ -51,10 +48,10 @@ async def _reply_cached(
 
 
 async def _announce(message: Message, bot: Bot) -> Message:
-    status = await message.reply(_STATUS_TEXT)
+    status = await message.reply(TEXT_DOWNLOADING)
     # The activity hint is optional: its failure must not cancel the delivery.
-    with contextlib.suppress(TelegramAPIError):
-        await bot.send_chat_action(chat_id=message.chat.id, action=_UPLOAD_ACTION)
+    with contextlib.suppress(exceptions.TelegramAPIError):
+        await bot.send_chat_action(chat_id=message.chat.id, action=UPLOAD_ACTION)
     return status
 
 
@@ -118,6 +115,6 @@ async def _send_and_finish(
         await _send_and_clear_status(message, url, timer, outcome, status_msg)
     except Exception:
         log.exception("send_media_failed", url=url)
-        await status_msg.edit_text(_SEND_FAILED_TEXT)
+        await status_msg.edit_text(SEND_FAILED_TEXT)
     finally:
         _finish(url, timer, outcome)

@@ -3,11 +3,11 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 
-_MS_PER_SECOND = 1000
+from constants import MS_PER_SECOND
 
 
 def _to_ms(seconds: float) -> float:
-    return round(seconds * _MS_PER_SECOND, 1)
+    return round(seconds * MS_PER_SECOND, 1)
 
 
 def _stage_durations(stages: dict[str, float]) -> dict[str, float]:

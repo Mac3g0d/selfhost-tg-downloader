@@ -10,10 +10,32 @@ import structlog
 from aiogram import Bot, Router, enums, exceptions, types
 
 from config import settings
+from constants import (
+    HIT_CACHE_SECONDS,
+    KEY_FILE_ID,
+    KEY_TYPE,
+    MAX_ACTIVE_JOBS,
+    NO_PREVIEW,
+    NOOP_FILTER,
+    PAGE_FILTER,
+    PAGE_PREFIX,
+    PLACEHOLDER_FILTER,
+    PLACEHOLDER_PREFIX,
+    REFRESH_FILTER,
+    REFRESH_PREFIX,
+    SHORT_CACHE_SECONDS,
+    STATUS_TEMPLATE,
+    TEXT_BUSY,
+    TEXT_REFRESH,
+    TEXT_RETRY,
+    TEXT_UPLOADING,
+    TYPE_PHOTO,
+    TYPE_VIDEO,
+    URL_PATTERN,
+)
 from database import get_cached_media, get_inline_link, save_inline_link, set_cached_media
 from downloader.gallery import DownloadResult, MediaFile, cleanup, download_media
 from handlers import inline_ui as ui
-from handlers.media import URL_PATTERN
 from inflight import url_lock
 from timing import StageTimer, new_request_id
 from utils import clean_url
@@ -21,13 +43,6 @@ from utils import clean_url
 log = structlog.get_logger()
 
 router = Router(name="inline")
-
-SHORT_CACHE_SECONDS = 5
-HIT_CACHE_SECONDS = 300
-# Preparations started by inline queries are not awaited by anyone until the
-# placeholder is sent, so their number is capped.
-MAX_ACTIVE_JOBS = 16
-TEXT_BUSY = "слишком много загрузок, попробуй чуть позже"
 
 
 class DeliveryError(Exception):
@@ -57,13 +72,13 @@ def _supported_url(text: str) -> str:
 
 
 def _input_media(entry: dict[str, str]) -> types.InputMediaVideo | types.InputMediaPhoto:
-    if entry[ui.KEY_TYPE] == ui.TYPE_VIDEO:
-        return types.InputMediaVideo(media=entry[ui.KEY_FILE_ID], supports_streaming=True)
-    return types.InputMediaPhoto(media=entry[ui.KEY_FILE_ID])
+    if entry[KEY_TYPE] == TYPE_VIDEO:
+        return types.InputMediaVideo(media=entry[KEY_FILE_ID], supports_streaming=True)
+    return types.InputMediaPhoto(media=entry[KEY_FILE_ID])
 
 
 def _entry(kind: str, file_id: str) -> dict[str, str]:
-    return {ui.KEY_TYPE: kind, ui.KEY_FILE_ID: file_id}
+    return {KEY_TYPE: kind, KEY_FILE_ID: file_id}
 
 
 async def _send_media(bot: Bot, media_file: MediaFile, caption: str) -> dict[str, str] | None:
@@ -77,7 +92,7 @@ async def _send_media(bot: Bot, media_file: MediaFile, caption: str) -> dict[str
             supports_streaming=True,
             disable_notification=True,
         )
-        return _entry(ui.TYPE_VIDEO, sent.video.file_id) if sent.video else None
+        return _entry(TYPE_VIDEO, sent.video.file_id) if sent.video else None
     sent = await bot.send_photo(
         chat_id=settings.BUFFER_CHAT_ID,
         photo=input_file,
@@ -86,7 +101,7 @@ async def _send_media(bot: Bot, media_file: MediaFile, caption: str) -> dict[str
     )
     if not sent.photo:
         return None
-    return _entry(ui.TYPE_PHOTO, sent.photo[-1].file_id)
+    return _entry(TYPE_PHOTO, sent.photo[-1].file_id)
 
 
 async def _upload_all(
@@ -173,6 +188,8 @@ def _start_job(bot: Bot, url: str, caption: str) -> _Job:
     running = _jobs.get(url)
     if running is not None:
         return running
+    # Preparations started by inline queries are not awaited by anyone until the
+    # placeholder is sent, so their number is capped.
     if len(_jobs) >= MAX_ACTIVE_JOBS:
         raise DeliveryError(TEXT_BUSY)
 
@@ -262,9 +279,9 @@ async def _edit_status(
     # The status line is cosmetic: its failure must not cancel the delivery.
     try:
         await bot.edit_message_text(
-            ui.STATUS_TEMPLATE.format(status=status, url=url),
+            STATUS_TEMPLATE.format(status=status, url=url),
             inline_message_id=inline_message_id,
-            link_preview_options=ui.NO_PREVIEW,
+            link_preview_options=NO_PREVIEW,
             reply_markup=ui.refresh_keyboard(ui.link_key(url), button),
         )
     except exceptions.TelegramBadRequest:
@@ -298,7 +315,7 @@ class _Delivery:
                 self.inline_message_id,
                 ui.failure_text(str(exc)),
                 self.url,
-                ui.TEXT_RETRY,
+                TEXT_RETRY,
             )
             return False
         except exceptions.TelegramBadRequest as exc:
@@ -313,7 +330,7 @@ class _Delivery:
                 self.inline_message_id,
                 ui.failure_text("Telegram временно недоступен"),
                 self.url,
-                ui.TEXT_RETRY,
+                TEXT_RETRY,
             )
             return False
         return True
@@ -336,7 +353,7 @@ class _Delivery:
             await asyncio.wait({task, uploading}, return_when=asyncio.FIRST_COMPLETED)
             if not task.done():
                 await _edit_status(
-                    self.bot, self.inline_message_id, ui.TEXT_UPLOADING, self.url, ui.TEXT_REFRESH
+                    self.bot, self.inline_message_id, TEXT_UPLOADING, self.url, TEXT_REFRESH
                 )
             return await asyncio.shield(task)
 
@@ -378,18 +395,18 @@ async def _deliver(bot: Bot, inline_message_id: str, url: str, user: types.User)
     _log_delivery(delivery, succeeded)
 
 
-@router.chosen_inline_result(ui.PLACEHOLDER_FILTER)
+@router.chosen_inline_result(PLACEHOLDER_FILTER)
 async def on_placeholder_sent(chosen: types.ChosenInlineResult, bot: Bot) -> None:
     if not chosen.inline_message_id:
         return
-    url = await get_inline_link(chosen.result_id.removeprefix(ui.PLACEHOLDER_PREFIX))
+    url = await get_inline_link(chosen.result_id.removeprefix(PLACEHOLDER_PREFIX))
     if url:
         await _deliver(bot, chosen.inline_message_id, url, chosen.from_user)
 
 
-@router.callback_query(ui.REFRESH_FILTER)
+@router.callback_query(REFRESH_FILTER)
 async def on_refresh(callback: types.CallbackQuery, bot: Bot) -> None:
-    url = await get_inline_link((callback.data or "").removeprefix(ui.REFRESH_PREFIX))
+    url = await get_inline_link((callback.data or "").removeprefix(REFRESH_PREFIX))
     if not url or not callback.inline_message_id:
         await callback.answer("Ссылка устарела, отправь её заново", show_alert=True)
         return
@@ -400,7 +417,7 @@ async def on_refresh(callback: types.CallbackQuery, bot: Bot) -> None:
     await _deliver(bot, callback.inline_message_id, url, callback.from_user)
 
 
-@router.callback_query(ui.NOOP_FILTER)
+@router.callback_query(NOOP_FILTER)
 async def on_page_counter(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
@@ -417,9 +434,9 @@ async def _flip_page(
         )
 
 
-@router.callback_query(ui.PAGE_FILTER)
+@router.callback_query(PAGE_FILTER)
 async def on_page(callback: types.CallbackQuery, bot: Bot) -> None:
-    payload = (callback.data or "").removeprefix(ui.PAGE_PREFIX)
+    payload = (callback.data or "").removeprefix(PAGE_PREFIX)
     key, _, page = payload.rpartition(":")
     url = await get_inline_link(key)
     entries = await get_cached_media(url) if url else None

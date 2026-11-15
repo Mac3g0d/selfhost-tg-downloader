@@ -1,10 +1,10 @@
-import re
 from contextlib import AsyncExitStack
 
 import structlog
 from aiogram import Router
 from aiogram.types import Message
 
+from constants import URL_PATTERN
 from handlers.delivery import deliver_url
 from inflight import url_lock
 from timing import StageTimer, new_request_id
@@ -13,15 +13,6 @@ from utils import clean_url
 log = structlog.get_logger()
 
 router = Router(name="media")
-
-URL_PATTERN: re.Pattern[str] = re.compile(
-    r"https?://(?:"
-    r"(?:www\.|vm\.|vt\.|p\.|m\.)?tiktok\.com"
-    r"|(?:www\.)?instagram\.com"
-    r"|(?:www\.)?instagr\.am"
-    r")/[\w\-./?%&=+@]*",
-    re.IGNORECASE,
-)
 
 
 def _extract_urls(text: str) -> list[str]:

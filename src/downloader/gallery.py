@@ -3,7 +3,6 @@ import shutil
 import tempfile
 import threading
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,15 +10,17 @@ from pathlib import Path
 import structlog
 
 from config import settings
+from constants import (
+    IMAGE_EXTENSIONS,
+    MAX_PARALLEL_DOWNLOADS,
+    MS_PER_SECOND,
+    VIDEO_EXTENSIONS,
+    WORK_DIR_PREFIX,
+    WORKER_PREFIX,
+)
 from downloader import gdl_job
 
 log = structlog.get_logger()
-
-VIDEO_EXTENSIONS: frozenset[str] = frozenset((".mp4", ".mov", ".mkv", ".webm", ".avi"))
-IMAGE_EXTENSIONS: frozenset[str] = frozenset((".jpg", ".jpeg", ".png", ".webp"))
-MAX_PARALLEL_DOWNLOADS = 8
-DIR_ID_LENGTH = 8
-MS_PER_SECOND = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +52,7 @@ def _collect_media(directory: Path) -> list[MediaFile]:
 
 
 _executor = ThreadPoolExecutor(
-    max_workers=MAX_PARALLEL_DOWNLOADS, thread_name_prefix=gdl_job.WORKER_PREFIX
+    max_workers=MAX_PARALLEL_DOWNLOADS, thread_name_prefix=WORKER_PREFIX
 )
 
 
@@ -62,9 +63,8 @@ class _Download:
         self.url = url
         self.cancel = threading.Event()
         Path(settings.DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
-        short_id = uuid.uuid4().hex[:DIR_ID_LENGTH]
-        prefix = f"dl-{short_id}-"
-        self.work_dir = Path(tempfile.mkdtemp(dir=settings.DOWNLOAD_DIR, prefix=prefix))
+        work_dir = tempfile.mkdtemp(dir=settings.DOWNLOAD_DIR, prefix=WORK_DIR_PREFIX)
+        self.work_dir = Path(work_dir)
         self._started = time.perf_counter()
 
     async def run(self) -> DownloadResult:

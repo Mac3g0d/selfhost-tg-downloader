@@ -5,35 +5,31 @@ from typing import Any
 from aiogram.types import FSInputFile, Message
 
 from config import settings
+from constants import BYTES_PER_MB, KEY_FILE_ID, KEY_TYPE, TYPE_PHOTO, TYPE_VIDEO
 from downloader.gallery import MediaFile
 from timing import StageTimer
-
-FILE_ID = "file_id"
-_VIDEO = "video"
-_PHOTO = "photo"
-_BYTES_PER_MB = 1024 * 1024
 
 CacheItem = dict[str, str]
 
 
 async def reply_cached_item(message: Message, cached: dict[str, Any]) -> None:
-    if cached["type"] == _VIDEO:
-        await message.reply_video(video=cached[FILE_ID], supports_streaming=True)
+    if cached[KEY_TYPE] == TYPE_VIDEO:
+        await message.reply_video(video=cached[KEY_FILE_ID], supports_streaming=True)
     else:
-        await message.reply_photo(photo=cached[FILE_ID])
+        await message.reply_photo(photo=cached[KEY_FILE_ID])
 
 
 def _too_large_text(file_size: int) -> str:
-    size_mb = file_size / _BYTES_PER_MB
-    limit_mb = settings.max_telegram_file_size / _BYTES_PER_MB
+    size_mb = file_size / BYTES_PER_MB
+    limit_mb = settings.max_telegram_file_size / BYTES_PER_MB
     return f"⚠️ Файл слишком большой ({size_mb:.1f} MB). Лимит Telegram — {limit_mb:.0f} MB."
 
 
 def _cache_item(sent: Message, *, is_video: bool) -> CacheItem | None:
     if is_video and sent.video:
-        return {"type": _VIDEO, FILE_ID: sent.video.file_id}
+        return {KEY_TYPE: TYPE_VIDEO, KEY_FILE_ID: sent.video.file_id}
     if not is_video and sent.photo:
-        return {"type": _PHOTO, FILE_ID: sent.photo[-1].file_id}
+        return {KEY_TYPE: TYPE_PHOTO, KEY_FILE_ID: sent.photo[-1].file_id}
     return None
 
 
