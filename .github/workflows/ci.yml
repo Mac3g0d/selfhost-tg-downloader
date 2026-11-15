@@ -108,7 +108,7 @@ jobs:
           (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/ci/image.tar
       - name: mypy
-        run: docker run downloader-ci:checked mypy src tests scripts
+        run: docker run downloader-ci:checked mypy src tests
 
   ruff:
     needs: build
@@ -124,7 +124,7 @@ jobs:
           (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/ci/image.tar
       - name: ruff
-        run: docker run downloader-ci:checked sh -ec "ruff check src tests scripts && ruff format --check src tests scripts"
+        run: docker run downloader-ci:checked sh -ec "ruff check src tests && ruff format --check src tests"
 
   flake8:
     needs: build
@@ -140,7 +140,7 @@ jobs:
           (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/ci/image.tar
       - name: flake8 (wemake-python-styleguide)
-        run: docker run downloader-ci:checked flake8 src tests scripts
+        run: docker run downloader-ci:checked flake8 src tests
 
   ty:
     needs: build

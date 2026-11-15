@@ -145,19 +145,6 @@ Every request logs its stage durations (monotonic clock, milliseconds) under a s
 
 gallery-dl runs as a library inside the bot process, in a pool of up to 8 worker threads, so the interpreter start-up is paid once and HTTPS connections to the source sites are reused between requests. Two consequences: gallery-dl's built-in 6-12 s spacing between Instagram requests is switched off (it never applied when every download was a separate process) unless your own gallery-dl config sets `extractor.instagram.sleep-request`; and a download that hits `DOWNLOAD_TIMEOUT` is reported at once but its worker stops only at its next step, because a thread cannot be killed.
 
-Two scripts reproduce the measurements without touching the production cache:
-
-```bash
-# Download stage only: real downloads through the bot's downloader, first run and p50/p95 of later runs.
-uv run --frozen python scripts/bench_download.py --repeats 5 URL [URL ...]
-
-# Full inline and chat paths against a local fake Telegram API (no token needed), with an
-# optional uplink limit and per-call latency; p50/p95 per stage over the repeats.
-uv run --frozen python scripts/bench_e2e.py --mode both --repeats 5 --uplink-mbit 10 --latency-ms 100 URL [URL ...]
-```
-
-Both read the same settings as the bot (`COOKIES_FILE`, `DOWNLOAD_TIMEOUT`, ...) and print timings, sizes and counters only - never cookies or tokens. `bench_e2e.py` uses a temporary database emptied before every repeat, so the first request per URL is always a cache miss. Keep repeat counts low: each run is a real request to TikTok or Instagram.
-
 ## Local development and checks
 
 The development dependencies are a uv dependency group, not a package extra:
@@ -165,12 +152,12 @@ The development dependencies are a uv dependency group, not a package extra:
 ```bash
 uv sync --frozen --group dev --python 3.14
 uv run --frozen pytest -q -o tmp_path_retention_policy=all
-uv run --frozen mypy src tests scripts
-uv run --frozen ruff check src tests scripts
-uv run --frozen ruff format --check src tests scripts
+uv run --frozen mypy src tests
+uv run --frozen ruff check src tests
+uv run --frozen ruff format --check src tests
 uv run --frozen ty check src tests
 uv run --frozen bandit -r src
-uv run --frozen flake8 src tests scripts
+uv run --frozen flake8 src tests
 ```
 
 For the containerized toolchain, build the CI target (developer tools) and the scan target (Gitleaks and Trivy):
