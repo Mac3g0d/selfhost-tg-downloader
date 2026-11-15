@@ -1,95 +1,155 @@
-from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from unittest.mock import AsyncMock, call
 
 import pytest
 from aiogram.exceptions import TelegramNetworkError
-from aiogram.types import Chat, Message, User
+from aiogram.methods import SendMessage
+from aiogram.types import Message
 from pytest_mock import MockerFixture
 
-from downloader.gallery import DownloadResult
+import database
+from constants import ERROR_TEXT_LIMIT
 from handlers import delivery
 from handlers.media import _process_url, on_message
+from tests.constants import FAILURE_MARK, FAILURE_MARKUP_ALLOWANCE, UNBOUND_MESSAGE_PATTERN
+from tests.fixtures.chat import CachedLink, DeliveryCase, FailedDownload, LinkPair, Telegram
 from timing import StageTimer
 
 
-async def test_unbound_message_fails_explicitly(mocker: MockerFixture) -> None:
-    message = Message(
-        message_id=1,
-        date=datetime.now(UTC),
-        chat=Chat(id=1, type="private"),
-    )
-    mocker.patch("database.get_cached_media", new=mocker.AsyncMock(return_value=None))
-    with pytest.raises(RuntimeError, match="Message is not bound to a bot"):
-        await _process_url(message, "https://vm.tiktok.com/test")
+async def test_unbound_message_fails_explicitly(
+    unbound_message: Message, supported_url: str, database_ready: Path
+) -> None:
+    with pytest.raises(RuntimeError, match=UNBOUND_MESSAGE_PATTERN):
+        await _process_url(unbound_message, supported_url)
 
 
-async def test_own_inline_placeholder_is_not_answered(mocker: MockerFixture) -> None:
-    bot = mocker.Mock(id=777)
-    message = Message(
-        message_id=1,
-        date=datetime.now(UTC),
-        chat=Chat(id=1, type="private"),
-        text="⏳ Скачиваю…\n🔗 https://vm.tiktok.com/test",
-        via_bot=User(id=777, is_bot=True, first_name="bot"),
-    ).as_(bot)
-    process = mocker.patch("handlers.media._process_url")
+async def test_own_inline_placeholder_is_not_answered(
+    own_placeholder_message: Message, process_url: AsyncMock
+) -> None:
+    await on_message(own_placeholder_message)
 
-    await on_message(message)
-
-    process.assert_not_called()
+    process_url.assert_not_called()
 
 
-async def test_link_sent_through_another_bot_is_processed(mocker: MockerFixture) -> None:
-    bot = mocker.Mock(id=777)
-    message = Message(
-        message_id=1,
-        date=datetime.now(UTC),
-        chat=Chat(id=1, type="private"),
-        text="https://vm.tiktok.com/test",
-        via_bot=User(id=555, is_bot=True, first_name="other"),
-    ).as_(bot)
-    process = mocker.patch("handlers.media._process_url", new=mocker.AsyncMock())
+async def test_link_sent_through_another_bot_is_processed(
+    foreign_via_message: Message, supported_url: str, process_url: AsyncMock
+) -> None:
+    await on_message(foreign_via_message)
 
-    await on_message(message)
-
-    process.assert_awaited_once()
+    process_url.assert_awaited_once_with(foreign_via_message, supported_url)
 
 
-LONG_ERROR = "<html> & ".ljust(5000, "x")
+async def test_message_without_text_is_ignored(
+    textless_message: Message, process_url: AsyncMock
+) -> None:
+    await on_message(textless_message)
+
+    process_url.assert_not_called()
 
 
-def _bound_message(mocker: MockerFixture) -> tuple[Message, Any, Any]:
-    bot = mocker.AsyncMock(id=777)
-    status = mocker.AsyncMock()
-    bot.return_value = status
-    message = Message(
-        message_id=1,
-        date=datetime.now(UTC),
-        chat=Chat(id=1, type="private"),
-        text="https://vm.tiktok.com/test",
-    ).as_(bot)
-    return message, bot, status
+async def test_two_links_are_processed_in_order(
+    two_links: LinkPair, process_url: AsyncMock
+) -> None:
+    await on_message(two_links.message)
+
+    assert process_url.await_args_list == [call(two_links.message, url) for url in two_links.urls]
 
 
-async def test_download_error_is_escaped_and_shortened(mocker: MockerFixture) -> None:
-    message, _, status = _bound_message(mocker)
-    mocker.patch("database.get_cached_media", new=mocker.AsyncMock(return_value=None))
-    failed = DownloadResult(success=False, error=LONG_ERROR)
-    mocker.patch.object(delivery, "download_media", new=mocker.AsyncMock(return_value=failed))
+async def test_download_error_is_escaped_and_shortened(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    failed_download: FailedDownload,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
 
-    await delivery.deliver_url(message, "https://vm.tiktok.com/test", StageTimer())
+    text = telegram.edited_text()
+    assert FAILURE_MARK in text
+    assert failed_download.escaped_start in text
+    assert len(text) < ERROR_TEXT_LIMIT + FAILURE_MARKUP_ALLOWANCE
 
-    text = status.edit_text.call_args.args[0]
-    assert "&lt;html&gt; &amp; " in text
-    assert len(text) < 400
 
-
-async def test_failed_activity_hint_does_not_cancel_delivery(mocker: MockerFixture) -> None:
-    message, bot, status = _bound_message(mocker)
+async def test_failed_activity_hint_does_not_cancel_delivery(
+    link_message: Message, bot: AsyncMock, telegram: Telegram, mocker: MockerFixture
+) -> None:
     bot.send_chat_action.side_effect = TelegramNetworkError(
         method=mocker.Mock(), message="timeout"
     )
 
-    announced = await delivery._announce(message, bot)
+    announced = await delivery._announce(link_message, bot)
 
-    assert announced is status
+    assert announced is telegram.status
+
+
+async def test_cached_link_is_answered_with_cached_file_ids(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    cached_link: CachedLink,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
+
+    assert telegram.sent_files() == cached_link.expected_files
+
+
+async def test_cached_link_is_not_downloaded(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    cached_link: CachedLink,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
+
+    cached_link.download.assert_not_awaited()
+    assert SendMessage not in telegram.kinds()
+
+
+async def test_downloaded_file_is_sent_after_the_status_message(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    delivery_case: DeliveryCase,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
+
+    assert telegram.kinds() == [SendMessage, delivery_case.method_type]
+
+
+async def test_downloaded_file_is_cached(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    delivery_case: DeliveryCase,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
+
+    assert await database.get_cached_media(supported_url) == [delivery_case.cache_item]
+
+
+async def test_status_message_is_deleted_after_sending(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    delivery_case: DeliveryCase,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
+
+    telegram.status.delete.assert_awaited_once_with()
+
+
+async def test_work_directory_is_removed_after_sending(
+    link_message: Message,
+    supported_url: str,
+    timer: StageTimer,
+    telegram: Telegram,
+    delivery_case: DeliveryCase,
+) -> None:
+    await delivery.deliver_url(link_message, supported_url, timer)
+
+    assert not delivery_case.work_dir.exists()
