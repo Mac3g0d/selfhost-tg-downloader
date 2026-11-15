@@ -95,3 +95,4 @@ warn_required_dynamic_aliases = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["error"]
+session_timeout = 10
