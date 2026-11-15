@@ -27,6 +27,7 @@ dev = [
     "bandit>=1.9.4",
     "wemake-python-styleguide>=1.8",
     "polyfactory>=2.18",
+    "pytest-timeout>=2.4",
 ]
 
 [build-system]
