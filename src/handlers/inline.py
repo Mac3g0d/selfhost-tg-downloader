@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import secrets
+from contextlib import AsyncExitStack
 
 import structlog
 from aiogram import Bot, Router
@@ -17,6 +18,8 @@ from aiogram.types import (
 from config import settings
 from downloader.gallery import DownloadResult, cleanup, download_media
 from handlers.media import URL_PATTERN
+from inflight import url_lock
+from timing import StageTimer, new_request_id
 
 log = structlog.get_logger()
 
@@ -102,11 +105,21 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
         )
         return
 
+    timer = StageTimer()
+    with structlog.contextvars.bound_contextvars(req_id=new_request_id()):
+        async with AsyncExitStack() as stack:
+            with timer.stage("queue"):
+                await stack.enter_async_context(url_lock(url))
+            await _answer_supported_url(query, bot, url, timer)
+
+
+async def _answer_supported_url(query: InlineQuery, bot: Bot, url: str, timer: StageTimer) -> None:
     log.info("inline_query", url=url, user_id=query.from_user.id)
 
     from database import get_cached_media, set_cached_media
 
-    cached_data = await get_cached_media(url)
+    with timer.stage("cache_lookup"):
+        cached_data = await get_cached_media(url)
     if cached_data:
         log.info("inline_cache_hit", url=url)
         results: list[InlineQueryResultUnion] = []
@@ -127,17 +140,21 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
                         photo_file_id=item["file_id"],
                     )
                 )
-        await query.answer(results, cache_time=300)
+        with timer.stage("answer"):
+            await query.answer(results, cache_time=300)
+        log.info("inline_timing", url=url, cache="hit", **timer.summary())
         return
 
     # Отправляем "спиннер" пользователю в личку, чтобы было видно активность
 
-    with contextlib.suppress(Exception):
+    with timer.stage("chat_action"), contextlib.suppress(Exception):
         await bot.send_chat_action(chat_id=query.from_user.id, action=ChatAction.UPLOAD_VIDEO)
 
-    result: DownloadResult = await download_media(url)
+    with timer.stage("download"):
+        result: DownloadResult = await download_media(url)
 
     if not result.success:
+        log.info("inline_timing", url=url, cache="miss", ok=False, **timer.summary())
         await query.answer(
             [],
             cache_time=5,
@@ -158,13 +175,14 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
             result_id = hashlib.sha256(f"{url}:{i}".encode()).hexdigest()[:16]
 
             if media_file.is_video:
-                msg = await bot.send_video(
-                    chat_id=settings.BUFFER_CHAT_ID,
-                    video=input_file,
-                    caption=caption,
-                    supports_streaming=True,
-                    disable_notification=True,
-                )
+                with timer.stage("upload"):
+                    msg = await bot.send_video(
+                        chat_id=settings.BUFFER_CHAT_ID,
+                        video=input_file,
+                        caption=caption,
+                        supports_streaming=True,
+                        disable_notification=True,
+                    )
                 if msg.video:
                     file_id = msg.video.file_id
                     uploaded_results.append(
@@ -176,12 +194,13 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
                     )
                     cache_items.append({"type": "video", "file_id": file_id})
             else:
-                msg = await bot.send_photo(
-                    chat_id=settings.BUFFER_CHAT_ID,
-                    photo=input_file,
-                    caption=caption,
-                    disable_notification=True,
-                )
+                with timer.stage("upload"):
+                    msg = await bot.send_photo(
+                        chat_id=settings.BUFFER_CHAT_ID,
+                        photo=input_file,
+                        caption=caption,
+                        disable_notification=True,
+                    )
                 if msg.photo:
                     file_id = msg.photo[-1].file_id
                     uploaded_results.append(
@@ -193,8 +212,10 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
                     cache_items.append({"type": "photo", "file_id": file_id})
 
         if uploaded_results:
-            await set_cached_media(url, cache_items)
-            await query.answer(uploaded_results, cache_time=300)
+            with timer.stage("cache_write"):
+                await set_cached_media(url, cache_items)
+            with timer.stage("answer"):
+                await query.answer(uploaded_results, cache_time=300)
             log.info("inline_answered", url=url, result_count=len(uploaded_results))
         else:
             await query.answer([], cache_time=5)
@@ -205,4 +226,12 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
 
     finally:
         if result.work_dir:
-            cleanup(result.work_dir)
+            with timer.stage("cleanup"):
+                cleanup(result.work_dir)
+        log.info(
+            "inline_timing",
+            url=url,
+            cache="miss",
+            file_count=len(result.media_files),
+            **timer.summary(),
+        )

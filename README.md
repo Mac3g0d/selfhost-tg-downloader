@@ -136,6 +136,22 @@ docker build --target runtime -t selfhost-tg-downloader:local .
 
 Support is limited to the URL patterns accepted by the bot, even though gallery-dl supports other sites. Private content, expired links, login requirements, rate limits, and extractor changes can cause failures. There is no user allowlist or per-user quota in the current bot; restrict who can access your deployment if necessary.
 
+## Performance measurements
+
+Every request logs its stage durations (monotonic clock, milliseconds) under a shared `req_id`: `inline_timing` for inline queries and `message_timing` for chat messages, with `queue`, `cache_lookup`, `download`, `upload`, `cache_write`, `answer` and `total`. Concurrent requests for the same URL wait for the first one and are then served from the cache instead of downloading and uploading again.
+
+Two scripts reproduce the measurements without touching the production cache:
+
+```bash
+# Download stage only: real gallery-dl runs with the bot's command line, p50/p95 per URL.
+uv run --frozen python scripts/bench_download.py --repeats 5 URL [URL ...]
+
+# Full inline path against a local fake Telegram API (no token needed), optional uplink limit.
+uv run --frozen python scripts/bench_e2e.py --uplink-mbit 10 --duplicates 3 URL [URL ...]
+```
+
+Both read the same settings as the bot (`COOKIES_FILE`, `DOWNLOAD_TIMEOUT`, ...) and print timings, sizes and host names only - never cookies, tokens or gallery-dl output. `bench_e2e.py` uses a temporary empty database, so the first request per URL is always a cache miss. Keep repeat counts low: each run is a real request to TikTok or Instagram.
+
 ## Local development and checks
 
 The development dependencies are a uv dependency group, not a package extra:

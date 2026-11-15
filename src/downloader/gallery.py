@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,7 @@ async def download_media(url: str) -> DownloadResult:
     cmd.extend(["--", url])
 
     log.info("starting_download", url=url, cmd=" ".join(cmd))
+    started = time.perf_counter()
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -139,7 +141,14 @@ async def download_media(url: str) -> DownloadResult:
         cleanup(work_dir)
         return DownloadResult(success=False, error="No media files found after download")
 
-    log.info("download_complete", url=url, file_count=len(media_files), work_dir=str(work_dir))
+    log.info(
+        "download_complete",
+        url=url,
+        file_count=len(media_files),
+        total_bytes=sum(item.path.stat().st_size for item in media_files),
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+        work_dir=str(work_dir),
+    )
     return DownloadResult(success=True, media_files=media_files, work_dir=work_dir)
 
 
