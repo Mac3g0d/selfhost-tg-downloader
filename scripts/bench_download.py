@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import structlog
 
 from config import settings
-from downloader.gallery import cleanup, download_media
+from downloader.gallery import DownloadResult, cleanup, download_media
 from utils import clean_url
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,12 +81,12 @@ class _LagMonitor:
     """Async context manager measuring the worst event-loop stall inside it."""
 
     def __init__(self) -> None:
-        self.worst_ms = NO_LAG_MS
+        self.worst_ms: float = NO_LAG_MS
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
     async def _watch(self) -> None:
-        worst = NO_LAG_MS
+        worst: float = NO_LAG_MS
         while not self._stop.is_set():
             start = time.perf_counter()
             await asyncio.sleep(LAG_INTERVAL_S)
@@ -107,7 +107,9 @@ def _seconds(millis: float | None) -> float | None:
     return None if millis is None else millis / MS_PER_SECOND
 
 
-def _build_run(url: str, round_no: int, outcome, wall: float, lag_ms: float) -> Run:
+def _build_run(
+    url: str, round_no: int, outcome: DownloadResult, wall: float, lag_ms: float
+) -> Run:
     media = outcome.media_files
     return Run(
         url=url,

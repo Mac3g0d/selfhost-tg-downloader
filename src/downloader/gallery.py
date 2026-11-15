@@ -11,7 +11,7 @@ from pathlib import Path
 import structlog
 
 from config import settings
-from downloader.gdl_job import WORKER_PREFIX, Job, apply_settings, run_job
+from downloader import gdl_job
 
 log = structlog.get_logger()
 
@@ -50,13 +50,8 @@ def _collect_media(directory: Path) -> list[MediaFile]:
     return files
 
 
-# Names other modules and the tests import (and patch) from here.
-_Job = Job
-_apply_settings = apply_settings
-_run_job = run_job
-
 _executor = ThreadPoolExecutor(
-    max_workers=MAX_PARALLEL_DOWNLOADS, thread_name_prefix=WORKER_PREFIX
+    max_workers=MAX_PARALLEL_DOWNLOADS, thread_name_prefix=gdl_job.WORKER_PREFIX
 )
 
 
@@ -74,8 +69,9 @@ class _Download:
 
     async def run(self) -> DownloadResult:
         log.info("starting_download", url=self.url)
+        # Looked up on the module at call time so that tests can replace it.
         future = asyncio.get_running_loop().run_in_executor(
-            _executor, _run_job, self.url, self.work_dir, self.cancel
+            _executor, gdl_job.run_job, self.url, self.work_dir, self.cancel
         )
         try:
             status, errors, first_file_at = await asyncio.wait_for(

@@ -22,15 +22,12 @@ log = structlog.get_logger()
 
 router = Router(name="inline")
 
-PLACEHOLDER_PREFIX = ui.PLACEHOLDER_PREFIX
-REFRESH_PREFIX = ui.REFRESH_PREFIX
-PAGE_PREFIX = ui.PAGE_PREFIX
-PAGE_NOOP = ui.PAGE_NOOP
-TITLES = ui.TITLES
-_link_key = ui.link_key
-
 SHORT_CACHE_SECONDS = 5
 HIT_CACHE_SECONDS = 300
+# Preparations started by inline queries are not awaited by anyone until the
+# placeholder is sent, so their number is capped.
+MAX_ACTIVE_JOBS = 16
+TEXT_BUSY = "слишком много загрузок, попробуй чуть позже"
 
 
 class DeliveryError(Exception):
@@ -176,6 +173,8 @@ def _start_job(bot: Bot, url: str, caption: str) -> _Job:
     running = _jobs.get(url)
     if running is not None:
         return running
+    if len(_jobs) >= MAX_ACTIVE_JOBS:
+        raise DeliveryError(TEXT_BUSY)
 
     job = _Job()
     _jobs[url] = job
@@ -193,7 +192,11 @@ async def _answer_button(query: types.InlineQuery, label: str, start_parameter: 
 async def _answer_cached(
     query: types.InlineQuery, url: str, cached: ui.MediaEntries, timer: StageTimer
 ) -> None:
-    answers = ui.cached_results(_link_key(url), url, cached)
+    key = ui.link_key(url)
+    if len(cached) > 1:
+        # The pager buttons look the link up by this key, however it got cached.
+        await save_inline_link(key, url)
+    answers = ui.cached_results(key, url, cached)
     with timer.stage("answer"):
         await query.answer(answers, cache_time=HIT_CACHE_SECONDS)
     log.info("inline_timing", url=url, cache="hit", **timer.summary())
@@ -214,9 +217,14 @@ async def _answer_uncached(
 async def _answer_placeholder(
     query: types.InlineQuery, bot: Bot, url: str, timer: StageTimer
 ) -> None:
-    key = _link_key(url)
+    key = ui.link_key(url)
+    try:
+        _start_job(bot, url, ui.build_caption(query.from_user, query.chat_type, url))
+    except DeliveryError:
+        log.warning("inline_busy", url=url, active_jobs=len(_jobs))
+        await _answer_button(query, "⏳ Много загрузок, попробуй чуть позже", "busy")
+        return
     await save_inline_link(key, url)
-    _start_job(bot, url, ui.build_caption(query.from_user, query.chat_type, url))
 
     placeholder = ui.placeholder_result(key, url)
     with timer.stage("answer"):
@@ -251,13 +259,18 @@ async def on_inline_query(query: types.InlineQuery, bot: Bot) -> None:
 async def _edit_status(
     bot: Bot, inline_message_id: str, status: str, url: str, button: str
 ) -> None:
-    with contextlib.suppress(exceptions.TelegramBadRequest):
+    # The status line is cosmetic: its failure must not cancel the delivery.
+    try:
         await bot.edit_message_text(
             ui.STATUS_TEMPLATE.format(status=status, url=url),
             inline_message_id=inline_message_id,
             link_preview_options=ui.NO_PREVIEW,
-            reply_markup=ui.refresh_keyboard(_link_key(url), button),
+            reply_markup=ui.refresh_keyboard(ui.link_key(url), button),
         )
+    except exceptions.TelegramBadRequest:
+        return
+    except exceptions.TelegramAPIError as exc:
+        log.warning("inline_status_failed", url=url, error=str(exc))
 
 
 async def _remove_keyboard(bot: Bot, inline_message_id: str) -> None:
@@ -291,6 +304,18 @@ class _Delivery:
         except exceptions.TelegramBadRequest as exc:
             log.warning("inline_edit_failed", url=self.url, error=str(exc))
             return False
+        except exceptions.TelegramAPIError as exc:
+            # Flood limit or network trouble: the media is cached, so let the
+            # user ask again with the button.
+            log.warning("inline_edit_failed", url=self.url, error=str(exc))
+            await _edit_status(
+                self.bot,
+                self.inline_message_id,
+                ui.failure_text("Telegram временно недоступен"),
+                self.url,
+                ui.TEXT_RETRY,
+            )
+            return False
         return True
 
     async def _deliver(self, user: types.User) -> None:
@@ -316,7 +341,7 @@ class _Delivery:
             return await asyncio.shield(task)
 
     async def _show_media(self, entries: ui.MediaEntries) -> None:
-        markup = ui.pager(_link_key(self.url), 0, len(entries))
+        markup = ui.pager(ui.link_key(self.url), 0, len(entries))
         with self.timer.stage("edit"):
             await self.bot.edit_message_media(
                 _input_media(entries[0]),
@@ -357,14 +382,14 @@ async def _deliver(bot: Bot, inline_message_id: str, url: str, user: types.User)
 async def on_placeholder_sent(chosen: types.ChosenInlineResult, bot: Bot) -> None:
     if not chosen.inline_message_id:
         return
-    url = await get_inline_link(chosen.result_id.removeprefix(PLACEHOLDER_PREFIX))
+    url = await get_inline_link(chosen.result_id.removeprefix(ui.PLACEHOLDER_PREFIX))
     if url:
         await _deliver(bot, chosen.inline_message_id, url, chosen.from_user)
 
 
 @router.callback_query(ui.REFRESH_FILTER)
 async def on_refresh(callback: types.CallbackQuery, bot: Bot) -> None:
-    url = await get_inline_link((callback.data or "").removeprefix(REFRESH_PREFIX))
+    url = await get_inline_link((callback.data or "").removeprefix(ui.REFRESH_PREFIX))
     if not url or not callback.inline_message_id:
         await callback.answer("Ссылка устарела, отправь её заново", show_alert=True)
         return
@@ -394,7 +419,7 @@ async def _flip_page(
 
 @router.callback_query(ui.PAGE_FILTER)
 async def on_page(callback: types.CallbackQuery, bot: Bot) -> None:
-    payload = (callback.data or "").removeprefix(PAGE_PREFIX)
+    payload = (callback.data or "").removeprefix(ui.PAGE_PREFIX)
     key, _, page = payload.rpartition(":")
     url = await get_inline_link(key)
     entries = await get_cached_media(url) if url else None

@@ -62,7 +62,7 @@ async def save_inline_link(key: str, url: str) -> None:
     """Remember which URL a placeholder's button and result id stand for."""
     async with aiosqlite.connect(settings.DATABASE_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO inline_links (key, url) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO inline_links (key, url) VALUES (?, ?)",
             (key, url),
         )
         await db.commit()

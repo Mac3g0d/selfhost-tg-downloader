@@ -1,14 +1,17 @@
 """Download a URL (or reuse its cached file ids) and reply to the message with the media."""
 
 import asyncio
+import contextlib
 from typing import Any
 
 import structlog
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
 import database
 from downloader.gallery import DownloadResult, cleanup, download_media
+from handlers.inline_ui import failure_text
 from handlers.sending import reply_cached_item, send_all
 from timing import StageTimer
 
@@ -32,7 +35,7 @@ async def deliver_url(message: Message, url: str, timer: StageTimer) -> None:
     if not outcome.success:
         timings = timer.summary()
         log.info("message_timing", url=url, cache="miss", ok=False, **timings)
-        await status_msg.edit_text(f"❌ Не удалось скачать:\n<code>{outcome.error}</code>")
+        await status_msg.edit_text(failure_text(outcome.error))
         return
     await _send_and_finish(message, url, timer, outcome, status_msg)
 
@@ -49,7 +52,9 @@ async def _reply_cached(
 
 async def _announce(message: Message, bot: Bot) -> Message:
     status = await message.reply(_STATUS_TEXT)
-    await bot.send_chat_action(chat_id=message.chat.id, action=_UPLOAD_ACTION)
+    # The activity hint is optional: its failure must not cancel the delivery.
+    with contextlib.suppress(TelegramAPIError):
+        await bot.send_chat_action(chat_id=message.chat.id, action=_UPLOAD_ACTION)
     return status
 
 

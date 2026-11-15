@@ -9,11 +9,12 @@ from gallery_dl import config as gdl_config
 from pytest_mock import MockerFixture
 
 from config import settings
-from downloader.gallery import _apply_settings, _Job, _run_job, cleanup, download_media
+from downloader.gallery import cleanup, download_media
+from downloader.gdl_job import Job, apply_settings, run_job
 
 INSTAGRAM = ("extractor", "instagram")
 POST_URL = "https://www.instagram.com/p/ABCDEFGHIJK"
-RUN_JOB = "downloader.gallery._run_job"
+RUN_JOB = "downloader.gdl_job.run_job"
 CLEANUP_WAIT_SECONDS = 1
 
 
@@ -30,7 +31,7 @@ def _clean_gallery_dl_config() -> Any:
 
 
 def test_settings_without_auth() -> None:
-    _apply_settings()
+    apply_settings()
 
     assert gdl_config.get((), "cookies") is None
     assert gdl_config.get(INSTAGRAM, "username") is None
@@ -43,7 +44,7 @@ def test_settings_with_cookies_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     cookies.write_text("cookie data")
     monkeypatch.setattr(settings, "COOKIES_FILE", str(cookies))
 
-    _apply_settings()
+    apply_settings()
 
     assert gdl_config.get((), "cookies") == str(cookies)
 
@@ -53,7 +54,7 @@ def test_missing_cookies_file_is_not_passed(
 ) -> None:
     monkeypatch.setattr(settings, "COOKIES_FILE", str(tmp_path / "absent.txt"))
 
-    _apply_settings()
+    apply_settings()
 
     assert gdl_config.get((), "cookies") is None
 
@@ -67,7 +68,7 @@ def test_credentials_take_priority_over_cookies(
     monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
     monkeypatch.setattr(settings, "INSTAGRAM_PASS", "pass")
 
-    _apply_settings()
+    apply_settings()
 
     assert gdl_config.get(INSTAGRAM, "username") == "user"
     assert gdl_config.get(INSTAGRAM, "password") == "pass"
@@ -78,7 +79,7 @@ def test_partial_credentials_are_ignored(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
     monkeypatch.setattr(settings, "INSTAGRAM_PASS", "")
 
-    _apply_settings()
+    apply_settings()
 
     assert gdl_config.get(INSTAGRAM, "username") is None
 
@@ -86,17 +87,17 @@ def test_partial_credentials_are_ignored(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_credentials_are_removed_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
     monkeypatch.setattr(settings, "INSTAGRAM_PASS", "pass")
-    _apply_settings()
+    apply_settings()
     monkeypatch.setattr(settings, "INSTAGRAM_USER", "")
 
-    _apply_settings()
+    apply_settings()
 
     assert gdl_config.get(INSTAGRAM, "password") is None
 
 
 def test_each_job_answers_its_own_destination(tmp_path: Path) -> None:
-    first = _Job(POST_URL, dest=tmp_path / "a")
-    second = _Job(POST_URL, dest=tmp_path / "b")
+    first = Job(POST_URL, dest=tmp_path / "a")
+    second = Job(POST_URL, dest=tmp_path / "b")
 
     assert first.extractor.config("base-directory") == str(tmp_path / "a")
     assert second.extractor.config("base-directory") == str(tmp_path / "b")
@@ -105,9 +106,9 @@ def test_each_job_answers_its_own_destination(tmp_path: Path) -> None:
 
 def test_child_job_inherits_destination_and_cancel_flag(tmp_path: Path) -> None:
     cancel = threading.Event()
-    parent = _Job(POST_URL, dest=tmp_path, cancel=cancel)
+    parent = Job(POST_URL, dest=tmp_path, cancel=cancel)
 
-    child = _Job(POST_URL, parent)
+    child = Job(POST_URL, parent)
 
     assert child.extractor.config("base-directory") == str(tmp_path)
     assert child.cancel is cancel
@@ -190,7 +191,7 @@ async def test_timeout_cancels_job_and_cleans_up_after_it_stops(
 
 
 def test_unsupported_url_is_reported(tmp_path: Path) -> None:
-    status, error, first_file_at = _run_job(
+    status, error, first_file_at = run_job(
         "https://example.com/nothing", tmp_path, threading.Event()
     )
 
@@ -210,3 +211,18 @@ def test_nonexistent_directory(tmp_path: Path, mocker: MockerFixture) -> None:
     remove_tree = mocker.patch("downloader.gallery.shutil.rmtree")
     cleanup(missing)
     remove_tree.assert_called_once_with(missing, ignore_errors=True)
+
+
+def test_job_cancelled_while_queued_does_not_contact_the_site(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    execute = mocker.patch.object(Job, "execute")
+    cancel = threading.Event()
+    cancel.set()
+
+    status, error, first_file_at = run_job(POST_URL, tmp_path, cancel)
+
+    assert status != 0
+    assert error == "Download cancelled"
+    assert first_file_at is None
+    execute.assert_not_called()

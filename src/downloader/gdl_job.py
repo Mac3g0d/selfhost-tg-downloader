@@ -170,6 +170,9 @@ def apply_settings() -> None:
 
 def run_job(url: str, work_dir: Path, cancel: threading.Event) -> tuple[int, str, FirstFileAt]:
     """Blocking gallery-dl run; returns (status, error text, time of first file)."""
+    if cancel.is_set():
+        # Timed out while waiting for a free worker: do not contact the site at all.
+        return CANCELLED_STATUS, "Download cancelled", None
     _SETUP.ensure()
     apply_settings()
     ERRORS.start()

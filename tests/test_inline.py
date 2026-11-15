@@ -18,6 +18,7 @@ from database import (
 )
 from downloader.gallery import DownloadResult, MediaFile
 from handlers import inline
+from handlers import inline_ui as ui
 
 URL = "https://www.instagram.com/reel/ABCDEFGHIJK"
 USER = tg_types.User(id=42, is_bot=False, first_name="Tester")
@@ -109,11 +110,11 @@ async def test_cache_miss_is_answered_at_once_with_placeholder(
     assert answer.is_personal is True
     article = _only(answer.results)
     assert isinstance(article, tg_types.InlineQueryResultArticle)
-    assert article.id == inline.PLACEHOLDER_PREFIX + inline._link_key(URL)
+    assert article.id == ui.PLACEHOLDER_PREFIX + ui.link_key(URL)
     assert article.reply_markup is not None
     button = article.reply_markup.inline_keyboard[0][0]
-    assert button.callback_data == inline.REFRESH_PREFIX + inline._link_key(URL)
-    assert await get_inline_link(inline._link_key(URL)) == URL
+    assert button.callback_data == ui.REFRESH_PREFIX + ui.link_key(URL)
+    assert await get_inline_link(ui.link_key(URL)) == URL
     await asyncio.wait_for(started.wait(), timeout=1)
     release.set()
     await _finish_jobs()
@@ -139,7 +140,7 @@ async def test_sent_placeholder_is_replaced_with_video(
     _download(tmp_path, mocker, ["clip.mp4"])
     await inline.on_inline_query(_query(bot), bot)
     chosen = tg_types.ChosenInlineResult(
-        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
@@ -165,7 +166,7 @@ async def test_carousel_placeholder_becomes_first_file_and_caches_all(
     _download(tmp_path, mocker, ["1.jpg", "2.jpg"])
     await inline.on_inline_query(_query(bot), bot)
     chosen = tg_types.ChosenInlineResult(
-        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
@@ -178,7 +179,7 @@ async def test_carousel_placeholder_becomes_first_file_and_caches_all(
     assert media.caption is None
     row = _edited_row(bot)
     assert [button.text for button in row] == ["◀️", "1 / 2", "▶️"]
-    assert row[2].callback_data == f"{inline.PAGE_PREFIX}{inline._link_key(URL)}:1"
+    assert row[2].callback_data == f"{ui.PAGE_PREFIX}{ui.link_key(URL)}:1"
     bot.edit_message_reply_markup.assert_not_called()
     cached = await get_cached_media(URL)
     assert cached is not None
@@ -192,7 +193,7 @@ async def test_query_and_delivery_share_one_download(
     await inline.on_inline_query(_query(bot), bot)
     await inline.on_inline_query(_query(bot), bot)
     chosen = tg_types.ChosenInlineResult(
-        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
@@ -212,7 +213,7 @@ async def test_failed_download_is_shown_with_retry_button(bot: Any, mocker: Mock
     )
     await inline.on_inline_query(_query(bot), bot)
     chosen = tg_types.ChosenInlineResult(
-        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
@@ -229,12 +230,12 @@ async def test_failed_download_is_shown_with_retry_button(bot: Any, mocker: Mock
 
 async def test_refresh_button_delivers_from_cache(bot: Any) -> None:
     await set_cached_media(URL, [{"type": "photo", "file_id": "cached-photo"}])
-    await save_inline_link(inline._link_key(URL), URL)
+    await save_inline_link(ui.link_key(URL), URL)
     callback = tg_types.CallbackQuery(
         id="7",
         from_user=USER,
         chat_instance="x",
-        data=inline.REFRESH_PREFIX + inline._link_key(URL),
+        data=ui.REFRESH_PREFIX + ui.link_key(URL),
         inline_message_id="msg-2",
     ).as_(bot)
 
@@ -250,7 +251,7 @@ async def test_refresh_with_unknown_link_asks_to_resend(bot: Any) -> None:
         id="7",
         from_user=USER,
         chat_instance="x",
-        data=f"{inline.REFRESH_PREFIX}missing",
+        data=f"{ui.REFRESH_PREFIX}missing",
         inline_message_id="msg-2",
     ).as_(bot)
 
@@ -269,9 +270,9 @@ async def test_keyboard_already_removed_is_not_an_error(
     bot.edit_message_reply_markup.side_effect = exceptions.TelegramBadRequest(
         method=mocker.Mock(), message="message is not modified"
     )
-    await save_inline_link(inline._link_key(URL), URL)
+    await save_inline_link(ui.link_key(URL), URL)
     chosen = tg_types.ChosenInlineResult(
-        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
@@ -290,21 +291,21 @@ def _page_callback(bot: Any, payload: str) -> tg_types.CallbackQuery:
 
 
 async def test_pager_flips_to_requested_file_and_wraps(bot: Any) -> None:
-    key = inline._link_key(URL)
+    key = ui.link_key(URL)
     await save_inline_link(key, URL)
     await set_cached_media(
         URL,
         [{"type": "photo", "file_id": "first"}, {"type": "video", "file_id": "second"}],
     )
 
-    await inline.on_page(_page_callback(bot, f"{inline.PAGE_PREFIX}{key}:1"), bot)
+    await inline.on_page(_page_callback(bot, f"{ui.PAGE_PREFIX}{key}:1"), bot)
 
     media = bot.edit_message_media.call_args.args[0]
     assert isinstance(media, tg_types.InputMediaVideo)
     assert media.media == "second"
     row = _edited_row(bot)
     assert row[1].text == "2 / 2"
-    assert row[2].callback_data == f"{inline.PAGE_PREFIX}{key}:0"
+    assert row[2].callback_data == f"{ui.PAGE_PREFIX}{key}:0"
 
 
 async def test_cached_carousel_results_carry_the_pager(bot: Any) -> None:
@@ -321,9 +322,107 @@ async def test_cached_carousel_results_carry_the_pager(bot: Any) -> None:
 
 
 async def test_pager_for_forgotten_post_asks_to_resend(bot: Any) -> None:
-    await inline.on_page(_page_callback(bot, f"{inline.PAGE_PREFIX}missing:1"), bot)
+    await inline.on_page(_page_callback(bot, f"{ui.PAGE_PREFIX}missing:1"), bot)
 
     bot.edit_message_media.assert_not_called()
     answer = _only(_requests(bot))
     assert isinstance(answer, methods.AnswerCallbackQuery)
     assert answer.show_alert is True
+
+
+async def test_pager_works_for_post_cached_outside_inline(bot: Any) -> None:
+    """A carousel cached by the chat handler has no stored link until it is queried."""
+    await set_cached_media(
+        URL, [{"type": "photo", "file_id": "first"}, {"type": "photo", "file_id": "second"}]
+    )
+    await inline.on_inline_query(_query(bot), bot)
+    markup: Any = _answer(bot).results[0].reply_markup
+    next_button = markup.inline_keyboard[0][2]
+
+    await inline.on_page(_page_callback(bot, next_button.callback_data), bot)
+
+    media = bot.edit_message_media.call_args.args[0]
+    assert media.media == "second"
+
+
+async def test_failed_status_edit_does_not_cancel_delivery(
+    bot: Any, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    uploading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_upload(**kwargs: Any) -> Any:
+        uploading.set()
+        await release.wait()
+        return SimpleNamespace(video=SimpleNamespace(file_id="video-id"))
+
+    async def flood(*args: Any, **kwargs: Any) -> None:
+        release.set()
+        raise exceptions.TelegramRetryAfter(
+            method=mocker.Mock(), message="Flood control", retry_after=5
+        )
+
+    _download(tmp_path, mocker, ["clip.mp4"])
+    bot.send_video.side_effect = slow_upload
+    bot.edit_message_text.side_effect = flood
+    await inline.on_inline_query(_query(bot), bot)
+    await asyncio.wait_for(uploading.wait(), timeout=1)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
+        from_user=USER,
+        query=URL,
+        inline_message_id="msg-1",
+    )
+
+    await inline.on_placeholder_sent(chosen, bot)
+
+    bot.edit_message_text.assert_awaited()
+    media = bot.edit_message_media.call_args.args[0]
+    assert media.media == "video-id"
+
+
+async def test_telegram_outage_on_replace_offers_retry(
+    bot: Any, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    _download(tmp_path, mocker, ["clip.mp4"])
+    bot.edit_message_media.side_effect = exceptions.TelegramNetworkError(
+        method=mocker.Mock(), message="timeout"
+    )
+    await save_inline_link(ui.link_key(URL), URL)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=ui.PLACEHOLDER_PREFIX + ui.link_key(URL),
+        from_user=USER,
+        query=URL,
+        inline_message_id="msg-1",
+    )
+
+    await inline.on_placeholder_sent(chosen, bot)
+
+    keyboard = bot.edit_message_text.call_args.kwargs["reply_markup"]
+    assert keyboard.inline_keyboard[0][0].text == ui.TEXT_RETRY
+    assert await get_cached_media(URL) == [{"type": "video", "file_id": "video-id"}]
+
+
+async def test_too_many_preparations_are_refused(
+    bot: Any, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(inline, "MAX_ACTIVE_JOBS", 1)
+    release = asyncio.Event()
+
+    async def slow_download(url: str) -> DownloadResult:
+        await release.wait()
+        return DownloadResult(success=False, error="stopped")
+
+    download = mocker.patch.object(inline, "download_media", side_effect=slow_download)
+    await inline.on_inline_query(_query(bot), bot)
+    bot.reset_mock()
+
+    await inline.on_inline_query(_query(bot, "https://www.instagram.com/reel/OTHERLINK11"), bot)
+
+    answer = _answer(bot)
+    assert answer.results == []
+    assert answer.button is not None
+    assert len(inline._jobs) == 1
+    release.set()
+    await _finish_jobs()
+    assert download.call_count == 1
