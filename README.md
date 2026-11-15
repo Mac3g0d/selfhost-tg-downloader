@@ -53,10 +53,10 @@ Edit `.env` and replace `TELEGRAM_BOT_TOKEN` with your own token. Do not use the
 ```bash
 uv python install 3.14
 uv sync --frozen --python 3.14
-uv run --frozen python -m src
+uv run --frozen bot
 ```
 
-Run commands from the repository root so relative configuration and data paths resolve correctly. The installed `src` package uses package-qualified imports; no `PYTHONPATH` override is needed.
+Run commands from the repository root so relative configuration and data paths resolve correctly. Hatch installs the modules under `src/` as top-level modules. Use `uv run --frozen bot` or `uv run --frozen python -m tg_downloader`; no `PYTHONPATH` override is needed after installation. For an uninstalled checkout, use `PYTHONPATH=src python -m tg_downloader` (`PYTHON_ROOT` is not a Python search-path variable).
 
 Open a private conversation with your bot, send `/start`, then send a supported TikTok or Instagram URL. For groups, configure the bot's permissions and BotFather privacy settings so it receives the messages you want it to process. Only text messages are scanned; media captions are not scanned.
 
@@ -143,10 +143,10 @@ The development dependencies are a uv dependency group, not a package extra:
 ```bash
 uv sync --frozen --group dev --python 3.14
 uv run --frozen pytest -q -o tmp_path_retention_policy=all
-uv run --frozen mypy src
+uv run --frozen mypy src tests
 uv run --frozen ruff check src tests
 uv run --frozen ruff format --check src tests
-uv run --frozen ty check src
+uv run --frozen ty check src tests
 uv run --frozen bandit -r src
 ```
 
@@ -166,7 +166,8 @@ These commands are checks to run, not a promise that every security gate is curr
 
 ```text
 src/
-  __main__.py        Startup, logging, database initialization, polling
+  __main__.py        Source-tree script wrapper
+  tg_downloader.py   Startup, logging, database initialization, polling
   config.py          Environment-based settings
   bot.py             Bot and dispatcher construction
   healthcheck.py     Startup diagnostics

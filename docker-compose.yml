@@ -6,6 +6,7 @@ services:
       target: runtime
     container_name: tg-downloader-bot
     restart: unless-stopped
+    command: ["bot"]
     env_file:
       - .env
     environment:

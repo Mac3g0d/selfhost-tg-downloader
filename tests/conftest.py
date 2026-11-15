@@ -14,7 +14,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(autouse=True)
 def _test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.config import Settings, settings
+    from config import Settings, settings
 
     # Mutate the shared object, not the config module's binding: callers import it.
     for name, value in Settings().model_dump().items():

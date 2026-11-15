@@ -5,8 +5,8 @@ from aiogram import Router, types
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 
-from src.config import settings
-from src.downloader.gallery import DownloadResult, cleanup, download_media
+from config import settings
+from downloader.gallery import DownloadResult, cleanup, download_media
 
 log = structlog.get_logger()
 
@@ -23,7 +23,7 @@ URL_PATTERN: re.Pattern[str] = re.compile(
 
 
 def _extract_urls(text: str) -> list[str]:
-    from src.utils import clean_url
+    from utils import clean_url
 
     return [clean_url(u.strip()) for u in URL_PATTERN.findall(text)]
 
@@ -32,7 +32,7 @@ async def _process_url(message: types.Message, url: str) -> None:
     user_id = message.from_user.id if message.from_user else "unknown"
     log.info("processing_url", url=url, user_id=user_id, chat_id=message.chat.id)
 
-    from src.database import get_cached_media, set_cached_media
+    from database import get_cached_media, set_cached_media
 
     cached_data = await get_cached_media(url)
     if cached_data:

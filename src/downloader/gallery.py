@@ -9,7 +9,7 @@ from pathlib import Path
 
 import structlog
 
-from src.config import settings
+from config import settings
 
 log = structlog.get_logger()
 

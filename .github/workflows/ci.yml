@@ -52,7 +52,7 @@ jobs:
       - name: Installed runtime import smoke test
         run: |
           docker load -i .ci-artifacts/runtime.tar
-          docker run -e TELEGRAM_BOT_TOKEN=test-token downloader-runtime:checked python -c 'import src.__main__, src.bot; import importlib.metadata; print(importlib.metadata.version("selfhost-tg-downloader"))'
+          docker run -e TELEGRAM_BOT_TOKEN=test-token downloader-runtime:checked python -c 'import tg_downloader, bot; import importlib.metadata; print(importlib.metadata.version("selfhost-tg-downloader"))'
           docker run downloader-runtime:checked python -c 'import subprocess; p="/app/downloads/ci-smoke.mp4"; subprocess.run(["ffmpeg","-v","error","-f","lavfi","-i","color=c=black:s=16x16:d=0.1","-c:v","mpeg4",p],check=True); result=subprocess.check_output(["ffprobe","-v","error","-show_entries","stream=codec_type","-of","csv=p=0",p],text=True).strip(); assert result=="video",result; print("FFmpeg offline encode/probe: PASS")'
 
   mypy:
@@ -69,7 +69,7 @@ jobs:
           (cd .ci-artifacts && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/ci.tar
       - name: mypy
-        run: docker run downloader-ci:checked mypy src
+        run: docker run downloader-ci:checked mypy src tests
 
   ruff:
     needs: build
@@ -101,7 +101,7 @@ jobs:
           (cd .ci-artifacts && sha256sum --check SHA256SUMS)
           docker load -i .ci-artifacts/ci.tar
       - name: ty
-        run: docker run downloader-ci:checked ty check src
+        run: docker run downloader-ci:checked ty check src tests
 
   bandit:
     needs: build

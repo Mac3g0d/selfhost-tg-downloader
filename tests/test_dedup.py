@@ -1,5 +1,5 @@
 def test_extract_urls_with_spaces() -> None:
-    from src.handlers.media import _extract_urls
+    from handlers.media import _extract_urls
 
     # Leading and trailing spaces are ignored.
     assert _extract_urls("  https://www.tiktok.com/@user/video/123  ") == [

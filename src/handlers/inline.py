@@ -14,9 +14,9 @@ from aiogram.types import (
     InlineQueryResultUnion,
 )
 
-from src.config import settings
-from src.downloader.gallery import DownloadResult, cleanup, download_media
-from src.handlers.media import URL_PATTERN
+from config import settings
+from downloader.gallery import DownloadResult, cleanup, download_media
+from handlers.media import URL_PATTERN
 
 log = structlog.get_logger()
 
@@ -75,7 +75,7 @@ def _build_caption(query: InlineQuery, url: str) -> str:
 
 @router.inline_query()
 async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
-    from src.utils import clean_url
+    from utils import clean_url
 
     url = clean_url(query.query.strip()) if query.query.strip() else ""
 
@@ -104,7 +104,7 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
 
     log.info("inline_query", url=url, user_id=query.from_user.id)
 
-    from src.database import get_cached_media, set_cached_media
+    from database import get_cached_media, set_cached_media
 
     cached_data = await get_cached_media(url)
     if cached_data:

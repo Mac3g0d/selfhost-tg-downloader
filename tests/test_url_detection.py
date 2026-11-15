@@ -1,6 +1,6 @@
 import pytest
 
-from src.handlers.media import _extract_urls
+from handlers.media import _extract_urls
 
 
 @pytest.mark.parametrize(

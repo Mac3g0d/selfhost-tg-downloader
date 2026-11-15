@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.downloader.gallery import MediaFile, _collect_media
+from downloader.gallery import MediaFile, _collect_media
 
 
 @pytest.fixture
