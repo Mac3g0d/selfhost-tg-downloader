@@ -96,15 +96,16 @@ Treat cookies, tokens, passwords, and temporary authentication files as secrets.
 ## Inline mode
 
 1. Enable inline mode for your bot with BotFather's `/setinline` command.
-2. Create a private buffer channel or chat and give the bot permission to send videos and photos there. For a channel, add the bot as an administrator with posting permission.
-3. Set its numeric ID in `.env`, for example `BUFFER_CHAT_ID=-1001234567890`.
-4. Restart the bot, then type `@your_bot_username <supported URL>` in a Telegram chat and select a result.
+2. Enable inline feedback with BotFather's `/setinlinefeedback` command and choose 100%, so the bot learns when a result has been sent.
+3. Create a private buffer channel or chat and give the bot permission to send videos and photos there. For a channel, add the bot as an administrator with posting permission.
+4. Set its numeric ID in `.env`, for example `BUFFER_CHAT_ID=-1001234567890`.
+5. Restart the bot, then type `@your_bot_username <supported URL>` in a Telegram chat and select a result.
 
-On a cache miss, the bot downloads the media and uploads it to the buffer chat to obtain reusable Telegram file IDs. Each media item is a separate inline result, not an automatically sent album. A configured buffer chat is required even when the requested URL is already cached.
+On a cache miss the bot answers at once with a single placeholder result ("⏳ Скачиваю…" with a refresh button) and prepares the media in the background: it downloads it and uploads it to the buffer chat to obtain reusable Telegram file IDs. When the placeholder has been sent to a chat, the bot edits that same message: first the status line, then the message is replaced with the video or photo and the button is removed. If the automatic update does not arrive - Telegram does not guarantee delivery of inline feedback - pressing the button does the same; after a failure the button retries. For a post with several files the message becomes the first one; all of them are cached, and the next inline query for the same link lists each as a separate result, not an automatically sent album. A configured buffer chat is required even when the requested URL is already cached.
 
 **Buffer chat privacy:** uploads include a caption containing the requesting user's name, Telegram ID, username when available, chat type when available, and source URL. Keep this chat private. Buffer messages are not automatically removed.
 
-A first-time download must finish before Telegram accepts the inline response; slow downloads can exceed Telegram's inline query deadline. Repeating the query after the media has been cached may help. Successful inline responses use a 300-second Telegram result cache; empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
+Telegram discards an inline answer that arrives later than roughly 8-10 seconds after the query (measured on a live bot; the limit is not documented), which is why a first-time download is not awaited before answering. Responses with cached media use a 300-second Telegram result cache, placeholder responses are not cached, and empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
 
 ## Docker
 

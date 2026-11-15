@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
 import statistics
 import sys
 import tempfile
@@ -38,7 +39,14 @@ import structlog  # noqa: E402
 from aiogram import Bot  # noqa: E402
 from aiogram.client.session.aiohttp import AiohttpSession  # noqa: E402
 from aiogram.client.telegram import TelegramAPIServer  # noqa: E402
-from aiogram.types import Chat, InlineQuery, Message, Update, User  # noqa: E402
+from aiogram.types import (  # noqa: E402
+    Chat,
+    ChosenInlineResult,
+    InlineQuery,
+    Message,
+    Update,
+    User,
+)
 from aiohttp import web  # noqa: E402
 
 from bot import create_dispatcher  # noqa: E402
@@ -53,6 +61,7 @@ class FakeTelegram:
         self.latency_s = latency_ms / 1000
         self.calls: Counter[str] = Counter()
         self.upload_bytes = 0
+        self.inline_results: list[dict[str, Any]] = []
         self._ids = 0
 
     async def handle(self, request: web.Request) -> web.Response:
@@ -60,6 +69,9 @@ class FakeTelegram:
         self.calls[method] += 1
         size = 0
         started = time.perf_counter()
+        if method == "answerInlineQuery":
+            form = await request.post()
+            self.inline_results = json.loads(str(form["results"]))
         async for chunk in request.content.iter_chunked(64 * 1024):
             size += len(chunk)
             if self.bytes_per_s:
@@ -102,10 +114,24 @@ class FakeTelegram:
 USER = User(id=42, is_bot=False, first_name="bench")
 
 
-async def _request(dp: Any, bot: Bot, mode: str, url: str, update_id: int) -> None:
+async def _request(
+    dp: Any, bot: Bot, fake: FakeTelegram, mode: str, url: str, update_id: int
+) -> None:
     if mode == "inline":
         query = InlineQuery(id=str(update_id), from_user=USER, query=url, offset="")
-        update = Update(update_id=update_id, inline_query=query)
+        await dp.feed_update(bot, Update(update_id=update_id, inline_query=query))
+        # A cache miss is answered with a placeholder: "send" it, as a user would,
+        # and wait until the bot has replaced it with the media.
+        first = fake.inline_results[0] if fake.inline_results else {}
+        if first.get("type") != "article":
+            return
+        chosen = ChosenInlineResult(
+            result_id=first["id"],
+            from_user=USER,
+            query=url,
+            inline_message_id=f"bench-{update_id}-{secrets.token_hex(4)}",
+        )
+        update = Update(update_id=update_id, chosen_inline_result=chosen)
     else:
         message = Message(
             message_id=update_id,
@@ -122,9 +148,11 @@ def _timings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     keep = []
     for entry in logs:
         if entry.get("event") in {"inline_timing", "message_timing"}:
-            keep.append(
-                {k: v for k, v in entry.items() if k not in {"event", "log_level", "req_id"}}
-            )
+            row = {k: v for k, v in entry.items() if k not in {"event", "log_level", "req_id"}}
+            for name in ("download_ms", "upload_ms"):
+                if f"job_{name}" in row:
+                    row[name] = row[f"job_{name}"]
+            keep.append(row)
     return keep
 
 
@@ -142,7 +170,7 @@ def _pct(values: list[float], q: float) -> float:
 
 
 def _summary(runs: list[dict[str, Any]], urls: list[str], modes: list[str]) -> None:
-    stages = ["total_ms", "download_ms", "upload_ms", "status_ms", "answer_ms", "send_cached_ms"]
+    stages = ["total_ms", "download_ms", "upload_ms", "status_ms", "answer_ms", "edit_ms"]
     print(  # noqa: T201
         f"\n{'mode':<7}{'cache':<6}{'url':<40}{'n':>3}  "
         + "".join(f"{name[:-3] + ' p50/p95':>20}" for name in stages)
@@ -213,7 +241,7 @@ async def main() -> int:
                     for expected in ("miss", "hit"):
                         update_id += 1
                         with structlog.testing.capture_logs() as logs:
-                            await _request(dp, bot, mode, url, update_id)
+                            await _request(dp, bot, fake, mode, url, update_id)
                         for row in _timings(logs):
                             row["mode"] = mode
                             report["runs"].append(row)
@@ -228,7 +256,7 @@ async def main() -> int:
             with structlog.testing.capture_logs() as logs:
                 await asyncio.gather(
                     *(
-                        _request(dp, bot, modes[0], urls[0], update_id + i + 1)
+                        _request(dp, bot, fake, modes[0], urls[0], update_id + i + 1)
                         for i in range(args.duplicates)
                     )
                 )
