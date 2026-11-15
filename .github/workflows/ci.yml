@@ -53,6 +53,7 @@ jobs:
         run: |
           docker load -i .ci-artifacts/runtime.tar
           docker run -e TELEGRAM_BOT_TOKEN=test-token downloader-runtime:checked python -c 'import src.__main__, src.bot; import importlib.metadata; print(importlib.metadata.version("selfhost-tg-downloader"))'
+          docker run downloader-runtime:checked python -c 'import subprocess; p="/app/downloads/ci-smoke.mp4"; subprocess.run(["ffmpeg","-v","error","-f","lavfi","-i","color=c=black:s=16x16:d=0.1","-c:v","mpeg4",p],check=True); result=subprocess.check_output(["ffprobe","-v","error","-show_entries","stream=codec_type","-of","csv=p=0",p],text=True).strip(); assert result=="video",result; print("FFmpeg offline encode/probe: PASS")'
 
   mypy:
     needs: build
@@ -230,8 +231,17 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag downloader-runtime:checked "$image"
-          docker push "$image"
+          if docker manifest inspect "$image" > image-manifest.json 2> registry-status.txt; then
+            docker pull "$image"
+            test "$(docker image inspect "$image" --format '{{.Id}}')" = "$(docker image inspect downloader-runtime:checked --format '{{.Id}}')" || { echo "Existing version image differs; refusing to overwrite it."; exit 1; }
+            echo "Identical checked image already published; completing only missing release steps."
+          elif grep -Eq 'manifest unknown|no such manifest|name unknown' registry-status.txt; then
+            docker tag downloader-runtime:checked "$image"
+            docker push "$image"
+          else
+            cat registry-status.txt
+            exit 1
+          fi
           docker pull "$image"
           test "$(docker image inspect "$image" --format '{{.Id}}')" = "$(docker image inspect downloader-runtime:checked --format '{{.Id}}')"
           docker image inspect "$image" --format '{{index .RepoDigests 0}}' > image-digest.txt
