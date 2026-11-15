@@ -4,18 +4,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import AnswerCallbackQuery, AnswerInlineQuery
-from aiogram.types import (
-    CallbackQuery,
-    ChosenInlineResult,
-    InlineQuery,
-    InlineQueryResultArticle,
-    InlineQueryResultCachedVideo,
-    InputMediaPhoto,
-    InputMediaVideo,
-    User,
-)
+from aiogram import exceptions, methods
+from aiogram import types as tg_types
 from pytest_mock import MockerFixture
 
 from config import settings
@@ -28,19 +18,9 @@ from database import (
 )
 from downloader.gallery import DownloadResult, MediaFile
 from handlers import inline
-from handlers.inline import (
-    PAGE_PREFIX,
-    PLACEHOLDER_PREFIX,
-    REFRESH_PREFIX,
-    _link_key,
-    on_inline_query,
-    on_page,
-    on_placeholder_sent,
-    on_refresh,
-)
 
 URL = "https://www.instagram.com/reel/ABCDEFGHIJK"
-USER = User(id=42, is_bot=False, first_name="Tester")
+USER = tg_types.User(id=42, is_bot=False, first_name="Tester")
 
 
 @pytest.fixture(autouse=True)
@@ -78,14 +58,30 @@ def _download(tmp_path: Path, mocker: MockerFixture, names: list[str]) -> Any:
     return mocker.patch.object(inline, "download_media", side_effect=make)
 
 
-def _query(bot: Any, text: str = URL) -> InlineQuery:
-    return InlineQuery(id="1", from_user=USER, query=text, offset="").as_(bot)
+def _query(bot: Any, text: str = URL) -> tg_types.InlineQuery:
+    query = tg_types.InlineQuery(id="1", from_user=USER, query=text, offset="")
+    return query.as_(bot)
 
 
-def _answer(bot: Any) -> AnswerInlineQuery:
-    calls = [c.args[0] for c in bot.call_args_list if isinstance(c.args[0], AnswerInlineQuery)]
-    assert len(calls) == 1
-    return calls[0]
+def _only(sequence: list[Any]) -> Any:
+    assert len(sequence) == 1
+    return sequence[0]
+
+
+def _requests(bot: Any) -> list[Any]:
+    return [call.args[0] for call in bot.call_args_list]
+
+
+def _answer(bot: Any) -> methods.AnswerInlineQuery:
+    answers = [req for req in _requests(bot) if isinstance(req, methods.AnswerInlineQuery)]
+    answer: methods.AnswerInlineQuery = _only(answers)
+    return answer
+
+
+def _edited_row(bot: Any) -> list[tg_types.InlineKeyboardButton]:
+    markup = bot.edit_message_media.call_args.kwargs["reply_markup"]
+    row: list[tg_types.InlineKeyboardButton] = markup.inline_keyboard[0]
+    return row
 
 
 async def _finish_jobs() -> None:
@@ -106,18 +102,18 @@ async def test_cache_miss_is_answered_at_once_with_placeholder(
 
     mocker.patch.object(inline, "download_media", side_effect=slow_download)
 
-    await on_inline_query(_query(bot), bot)
+    await inline.on_inline_query(_query(bot), bot)
 
     answer = _answer(bot)
     assert answer.cache_time == 0
     assert answer.is_personal is True
-    (result,) = answer.results
-    assert isinstance(result, InlineQueryResultArticle)
-    assert result.id == PLACEHOLDER_PREFIX + _link_key(URL)
-    assert result.reply_markup is not None
-    button = result.reply_markup.inline_keyboard[0][0]
-    assert button.callback_data == REFRESH_PREFIX + _link_key(URL)
-    assert await get_inline_link(_link_key(URL)) == URL
+    article = _only(answer.results)
+    assert isinstance(article, tg_types.InlineQueryResultArticle)
+    assert article.id == inline.PLACEHOLDER_PREFIX + inline._link_key(URL)
+    assert article.reply_markup is not None
+    button = article.reply_markup.inline_keyboard[0][0]
+    assert button.callback_data == inline.REFRESH_PREFIX + inline._link_key(URL)
+    assert await get_inline_link(inline._link_key(URL)) == URL
     await asyncio.wait_for(started.wait(), timeout=1)
     release.set()
     await _finish_jobs()
@@ -127,12 +123,12 @@ async def test_cache_hit_returns_media_directly(bot: Any, mocker: MockerFixture)
     await set_cached_media(URL, [{"type": "video", "file_id": "cached-id"}])
     download = mocker.patch.object(inline, "download_media")
 
-    await on_inline_query(_query(bot), bot)
+    await inline.on_inline_query(_query(bot), bot)
 
     answer = _answer(bot)
-    (result,) = answer.results
-    assert isinstance(result, InlineQueryResultCachedVideo)
-    assert result.video_file_id == "cached-id"
+    cached_video = _only(answer.results)
+    assert isinstance(cached_video, tg_types.InlineQueryResultCachedVideo)
+    assert cached_video.video_file_id == "cached-id"
     assert answer.cache_time == 300
     download.assert_not_called()
 
@@ -141,18 +137,18 @@ async def test_sent_placeholder_is_replaced_with_video(
     bot: Any, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     _download(tmp_path, mocker, ["clip.mp4"])
-    await on_inline_query(_query(bot), bot)
-    chosen = ChosenInlineResult(
-        result_id=PLACEHOLDER_PREFIX + _link_key(URL),
+    await inline.on_inline_query(_query(bot), bot)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
     )
 
-    await on_placeholder_sent(chosen, bot)
+    await inline.on_placeholder_sent(chosen, bot)
 
     media = bot.edit_message_media.call_args.args[0]
-    assert isinstance(media, InputMediaVideo)
+    assert isinstance(media, tg_types.InputMediaVideo)
     assert media.media == "video-id"
     assert bot.edit_message_media.call_args.kwargs == {
         "inline_message_id": "msg-1",
@@ -167,22 +163,22 @@ async def test_carousel_placeholder_becomes_first_file_and_caches_all(
     bot: Any, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     _download(tmp_path, mocker, ["1.jpg", "2.jpg"])
-    await on_inline_query(_query(bot), bot)
-    chosen = ChosenInlineResult(
-        result_id=PLACEHOLDER_PREFIX + _link_key(URL),
+    await inline.on_inline_query(_query(bot), bot)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
     )
 
-    await on_placeholder_sent(chosen, bot)
+    await inline.on_placeholder_sent(chosen, bot)
 
     media = bot.edit_message_media.call_args.args[0]
-    assert isinstance(media, InputMediaPhoto)
+    assert isinstance(media, tg_types.InputMediaPhoto)
     assert media.caption is None
-    row = bot.edit_message_media.call_args.kwargs["reply_markup"].inline_keyboard[0]
+    row = _edited_row(bot)
     assert [button.text for button in row] == ["◀️", "1 / 2", "▶️"]
-    assert row[2].callback_data == f"{PAGE_PREFIX}{_link_key(URL)}:1"
+    assert row[2].callback_data == f"{inline.PAGE_PREFIX}{inline._link_key(URL)}:1"
     bot.edit_message_reply_markup.assert_not_called()
     cached = await get_cached_media(URL)
     assert cached is not None
@@ -193,16 +189,16 @@ async def test_query_and_delivery_share_one_download(
     bot: Any, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     download = _download(tmp_path, mocker, ["clip.mp4"])
-    await on_inline_query(_query(bot), bot)
-    await on_inline_query(_query(bot), bot)
-    chosen = ChosenInlineResult(
-        result_id=PLACEHOLDER_PREFIX + _link_key(URL),
+    await inline.on_inline_query(_query(bot), bot)
+    await inline.on_inline_query(_query(bot), bot)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
     )
 
-    await on_placeholder_sent(chosen, bot)
+    await inline.on_placeholder_sent(chosen, bot)
 
     assert download.call_count == 1
     assert bot.send_video.await_count == 1
@@ -214,15 +210,15 @@ async def test_failed_download_is_shown_with_retry_button(bot: Any, mocker: Mock
         "download_media",
         return_value=DownloadResult(success=False, error="<login> required"),
     )
-    await on_inline_query(_query(bot), bot)
-    chosen = ChosenInlineResult(
-        result_id=PLACEHOLDER_PREFIX + _link_key(URL),
+    await inline.on_inline_query(_query(bot), bot)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
     )
 
-    await on_placeholder_sent(chosen, bot)
+    await inline.on_placeholder_sent(chosen, bot)
 
     bot.edit_message_media.assert_not_called()
     text = bot.edit_message_text.call_args.args[0]
@@ -233,35 +229,35 @@ async def test_failed_download_is_shown_with_retry_button(bot: Any, mocker: Mock
 
 async def test_refresh_button_delivers_from_cache(bot: Any) -> None:
     await set_cached_media(URL, [{"type": "photo", "file_id": "cached-photo"}])
-    await save_inline_link(_link_key(URL), URL)
-    callback = CallbackQuery(
+    await save_inline_link(inline._link_key(URL), URL)
+    callback = tg_types.CallbackQuery(
         id="7",
         from_user=USER,
         chat_instance="x",
-        data=REFRESH_PREFIX + _link_key(URL),
+        data=inline.REFRESH_PREFIX + inline._link_key(URL),
         inline_message_id="msg-2",
     ).as_(bot)
 
-    await on_refresh(callback, bot)
+    await inline.on_refresh(callback, bot)
 
     media = bot.edit_message_media.call_args.args[0]
-    assert isinstance(media, InputMediaPhoto)
+    assert isinstance(media, tg_types.InputMediaPhoto)
     assert media.media == "cached-photo"
 
 
 async def test_refresh_with_unknown_link_asks_to_resend(bot: Any) -> None:
-    callback = CallbackQuery(
+    callback = tg_types.CallbackQuery(
         id="7",
         from_user=USER,
         chat_instance="x",
-        data=REFRESH_PREFIX + "missing",
+        data=f"{inline.REFRESH_PREFIX}missing",
         inline_message_id="msg-2",
     ).as_(bot)
 
-    await on_refresh(callback, bot)
+    await inline.on_refresh(callback, bot)
 
-    (answer,) = [c.args[0] for c in bot.call_args_list]
-    assert isinstance(answer, AnswerCallbackQuery)
+    answer = _only(_requests(bot))
+    assert isinstance(answer, methods.AnswerCallbackQuery)
     assert answer.show_alert is True
     bot.edit_message_media.assert_not_called()
 
@@ -270,45 +266,45 @@ async def test_keyboard_already_removed_is_not_an_error(
     bot: Any, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     _download(tmp_path, mocker, ["clip.mp4"])
-    bot.edit_message_reply_markup.side_effect = TelegramBadRequest(
+    bot.edit_message_reply_markup.side_effect = exceptions.TelegramBadRequest(
         method=mocker.Mock(), message="message is not modified"
     )
-    await save_inline_link(_link_key(URL), URL)
-    chosen = ChosenInlineResult(
-        result_id=PLACEHOLDER_PREFIX + _link_key(URL),
+    await save_inline_link(inline._link_key(URL), URL)
+    chosen = tg_types.ChosenInlineResult(
+        result_id=inline.PLACEHOLDER_PREFIX + inline._link_key(URL),
         from_user=USER,
         query=URL,
         inline_message_id="msg-1",
     )
 
-    await on_placeholder_sent(chosen, bot)
+    await inline.on_placeholder_sent(chosen, bot)
 
     bot.edit_message_media.assert_awaited_once()
     assert all("❌" not in call.args[0] for call in bot.edit_message_text.call_args_list)
 
 
-def _page_callback(bot: Any, data: str) -> CallbackQuery:
-    return CallbackQuery(
-        id="9", from_user=USER, chat_instance="x", data=data, inline_message_id="msg-3"
+def _page_callback(bot: Any, payload: str) -> tg_types.CallbackQuery:
+    return tg_types.CallbackQuery(
+        id="9", from_user=USER, chat_instance="x", data=payload, inline_message_id="msg-3"
     ).as_(bot)
 
 
 async def test_pager_flips_to_requested_file_and_wraps(bot: Any) -> None:
-    key = _link_key(URL)
+    key = inline._link_key(URL)
     await save_inline_link(key, URL)
     await set_cached_media(
         URL,
         [{"type": "photo", "file_id": "first"}, {"type": "video", "file_id": "second"}],
     )
 
-    await on_page(_page_callback(bot, f"{PAGE_PREFIX}{key}:1"), bot)
+    await inline.on_page(_page_callback(bot, f"{inline.PAGE_PREFIX}{key}:1"), bot)
 
     media = bot.edit_message_media.call_args.args[0]
-    assert isinstance(media, InputMediaVideo)
+    assert isinstance(media, tg_types.InputMediaVideo)
     assert media.media == "second"
-    row = bot.edit_message_media.call_args.kwargs["reply_markup"].inline_keyboard[0]
+    row = _edited_row(bot)
     assert row[1].text == "2 / 2"
-    assert row[2].callback_data == f"{PAGE_PREFIX}{key}:0"
+    assert row[2].callback_data == f"{inline.PAGE_PREFIX}{key}:0"
 
 
 async def test_cached_carousel_results_carry_the_pager(bot: Any) -> None:
@@ -316,17 +312,18 @@ async def test_cached_carousel_results_carry_the_pager(bot: Any) -> None:
         URL, [{"type": "photo", "file_id": "first"}, {"type": "photo", "file_id": "second"}]
     )
 
-    await on_inline_query(_query(bot), bot)
+    await inline.on_inline_query(_query(bot), bot)
 
     second = _answer(bot).results[1]
     assert second.reply_markup is not None
-    assert second.reply_markup.inline_keyboard[0][1].text == "2 / 2"
+    pager_row = second.reply_markup.inline_keyboard[0]
+    assert pager_row[1].text == "2 / 2"
 
 
 async def test_pager_for_forgotten_post_asks_to_resend(bot: Any) -> None:
-    await on_page(_page_callback(bot, f"{PAGE_PREFIX}missing:1"), bot)
+    await inline.on_page(_page_callback(bot, f"{inline.PAGE_PREFIX}missing:1"), bot)
 
     bot.edit_message_media.assert_not_called()
-    (answer,) = [c.args[0] for c in bot.call_args_list]
-    assert isinstance(answer, AnswerCallbackQuery)
+    answer = _only(_requests(bot))
+    assert isinstance(answer, methods.AnswerCallbackQuery)
     assert answer.show_alert is True

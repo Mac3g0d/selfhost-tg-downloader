@@ -1,419 +1,360 @@
+"""Inline mode handlers."""
+
+# flake8: noqa: WPS202
+# One feature keeps its handlers and their small helpers together.
+
 import asyncio
 import contextlib
-import hashlib
-import html
-import secrets
-from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
-from typing import Any
 
 import structlog
-from aiogram import Bot, F, Router
-from aiogram.enums import ChatAction
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import (
-    CallbackQuery,
-    ChosenInlineResult,
-    FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InlineQuery,
-    InlineQueryResultArticle,
-    InlineQueryResultCachedPhoto,
-    InlineQueryResultCachedVideo,
-    InlineQueryResultsButton,
-    InlineQueryResultUnion,
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputTextMessageContent,
-    LinkPreviewOptions,
-    User,
-)
+from aiogram import Bot, Router, enums, exceptions, types
 
 from config import settings
 from database import get_cached_media, get_inline_link, save_inline_link, set_cached_media
-from downloader.gallery import cleanup, download_media
+from downloader.gallery import DownloadResult, MediaFile, cleanup, download_media
+from handlers import inline_ui as ui
 from handlers.media import URL_PATTERN
 from inflight import url_lock
 from timing import StageTimer, new_request_id
+from utils import clean_url
 
 log = structlog.get_logger()
 
 router = Router(name="inline")
 
-# Telegram drops an inline answer that arrives later than roughly 8-10 seconds
-# after the query (measured on a live bot), so a cache miss is answered at once
-# with a placeholder message that is replaced by the media when it is ready.
-PLACEHOLDER_PREFIX = "w:"
-REFRESH_PREFIX = "r:"
-PAGE_PREFIX = "g:"
-PAGE_NOOP = "g:-"
-TEXT_DOWNLOADING = "⏳ Голова, терпани малеха, качаю"
-TEXT_UPLOADING = "⬆️ Загружаю в Telegram…"
-NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+PLACEHOLDER_PREFIX = ui.PLACEHOLDER_PREFIX
+REFRESH_PREFIX = ui.REFRESH_PREFIX
+PAGE_PREFIX = ui.PAGE_PREFIX
+PAGE_NOOP = ui.PAGE_NOOP
+TITLES = ui.TITLES
+_link_key = ui.link_key
 
-
-TITLES: list[str] = [
-    "очень крутое видео",
-    "это точно понравится твоей маме",
-    "ты серьезно хочешь это прислать?",
-    "когда ты последний раз звонил маме?",
-    "ты сегодня пил воду?",
-    "что вершит судьбу человечества в этом мире?",
-    "сон — это репетиция смерти.",
-    "ты — лишь набор атомов, смотрящий в экран.",
-    "траффик уходит, время не вернешь.",
-    "это видео изменит твою жизнь (нет).",
-    "опять деградируем?",
-    "нажми, если осмелишься.",
-    "вселенная бесконечна, а этот видос — нет.",
-    "ты уверен, что это не симуляция?",
-    "однажды нас всех забудут.",
-    "просто нажми и не думай.",
-    "А ты покакал сегодня?",
-    "Два лучше, чем один.",
-    "Чем морщинистей изюм, тем он слаще.",
-    "Старина, съеби нахуй.",
-    "Если упал, вставай, если встал, упай. Чокопай.",
-    "Че губу раскатал?",
-    "Любишь кататься- люби и катайся.",
-    "Много хочешь- мало получишь.",
-]
+SHORT_CACHE_SECONDS = 5
+HIT_CACHE_SECONDS = 300
 
 
 class DeliveryError(Exception):
     """Media could not be prepared; the message is safe to show to the user."""
 
 
-@dataclass(slots=True, eq=False)
 class _Job:
     """One preparation of a URL: download, upload to the buffer chat, cache."""
 
-    uploading: asyncio.Event = field(default_factory=asyncio.Event)
-    timings: dict[str, float] = field(default_factory=dict)
-    task: asyncio.Task[list[dict[str, Any]]] | None = None
+    __slots__ = ("task", "timings", "uploading")
+
+    def __init__(self) -> None:
+        self.uploading = asyncio.Event()
+        self.timings: dict[str, float] = {}
+        self.task: asyncio.Task[ui.MediaEntries] | None = None
 
 
 _jobs: dict[str, _Job] = {}
 _delivering: set[str] = set()
 
 
-def _is_supported_url(text: str) -> bool:
-    return bool(URL_PATTERN.match(text.strip()))
+def _supported_url(text: str) -> str:
+    """The cleaned link from the query text, or an empty string if unsupported."""
+    stripped = text.strip()
+    cleaned = clean_url(stripped) if stripped else ""
+    return cleaned if URL_PATTERN.match(cleaned.strip()) else ""
 
 
-def _link_key(url: str) -> str:
-    return hashlib.sha256(url.encode()).hexdigest()[:24]
+def _input_media(entry: dict[str, str]) -> types.InputMediaVideo | types.InputMediaPhoto:
+    if entry[ui.KEY_TYPE] == ui.TYPE_VIDEO:
+        return types.InputMediaVideo(media=entry[ui.KEY_FILE_ID], supports_streaming=True)
+    return types.InputMediaPhoto(media=entry[ui.KEY_FILE_ID])
 
 
-def _build_caption(user: User, chat_type: str | None, url: str) -> str:
-    parts = [
-        f"👤 <b>{html.escape(user.full_name)}</b>",
-        f"🆔 <code>{user.id}</code>",
-    ]
-
-    if user.username:
-        parts.append(f"📎 {user.username}")
-
-    if chat_type:
-        parts.append(f"💬 {chat_type}")
-
-    parts.append(f"🔗 {url}")
-
-    return "\n".join(parts)
+def _entry(kind: str, file_id: str) -> dict[str, str]:
+    return {ui.KEY_TYPE: kind, ui.KEY_FILE_ID: file_id}
 
 
-def _refresh_keyboard(key: str, text: str = "🔄 Обновить") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=REFRESH_PREFIX + key)]]
+async def _send_media(bot: Bot, media_file: MediaFile, caption: str) -> dict[str, str] | None:
+    """Upload one downloaded file to the buffer chat and return its cache entry."""
+    input_file = types.FSInputFile(media_file.path)
+    if media_file.is_video:
+        sent = await bot.send_video(
+            chat_id=settings.BUFFER_CHAT_ID,
+            video=input_file,
+            caption=caption,
+            supports_streaming=True,
+            disable_notification=True,
+        )
+        return _entry(ui.TYPE_VIDEO, sent.video.file_id) if sent.video else None
+    sent = await bot.send_photo(
+        chat_id=settings.BUFFER_CHAT_ID,
+        photo=input_file,
+        caption=caption,
+        disable_notification=True,
     )
-
-
-def _pager(key: str, index: int, total: int) -> InlineKeyboardMarkup | None:
-    """Buttons to flip through a multi-file post inside one message.
-
-    An inline message holds a single media and cannot become an album, so the
-    other files are reached by replacing the media in place.
-    """
-    if total < 2:
+    if not sent.photo:
         return None
-    previous_page = f"{PAGE_PREFIX}{key}:{(index - 1) % total}"
-    next_page = f"{PAGE_PREFIX}{key}:{(index + 1) % total}"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀️", callback_data=previous_page),
-                InlineKeyboardButton(text=f"{index + 1} / {total}", callback_data=PAGE_NOOP),
-                InlineKeyboardButton(text="▶️", callback_data=next_page),
-            ]
-        ]
-    )
+    return _entry(ui.TYPE_PHOTO, sent.photo[-1].file_id)
 
 
-def _input_media(item: dict[str, Any]) -> InputMediaVideo | InputMediaPhoto:
-    if item["type"] == "video":
-        return InputMediaVideo(media=item["file_id"], supports_streaming=True)
-    return InputMediaPhoto(media=item["file_id"])
+async def _upload_all(
+    bot: Bot, downloaded: DownloadResult, caption: str, timer: StageTimer
+) -> ui.MediaEntries:
+    uploaded: ui.MediaEntries = []
+    for media_file in downloaded.media_files:
+        with timer.stage("upload"):
+            # One upload at a time on purpose, so the buffer chat is not flooded.
+            entry = await _send_media(bot, media_file, caption)  # noqa: WPS476
+        if entry:
+            uploaded.append(entry)
+    return uploaded
 
 
-def _status_text(status: str, url: str) -> str:
-    return f"{status}\n🔗 {url}"
+async def _download_or_fail(url: str, timer: StageTimer) -> DownloadResult:
+    with timer.stage("download"):
+        downloaded = await download_media(url)
+    if not downloaded.success:
+        raise DeliveryError(downloaded.error or "не удалось скачать")
+    return downloaded
 
 
-def _cached_results(url: str, items: list[dict[str, Any]]) -> list[InlineQueryResultUnion]:
-    key = _link_key(url)
-    results: list[InlineQueryResultUnion] = []
-    for i, item in enumerate(items):
-        result_id = hashlib.sha256(f"{url}:{i}".encode()).hexdigest()[:16]
-        pager = _pager(key, i, len(items))
-        if item["type"] == "video":
-            results.append(
-                InlineQueryResultCachedVideo(
-                    id=result_id,
-                    video_file_id=item["file_id"],
-                    title=secrets.choice(TITLES),
-                    reply_markup=pager,
-                )
-            )
-        else:
-            results.append(
-                InlineQueryResultCachedPhoto(
-                    id=result_id, photo_file_id=item["file_id"], reply_markup=pager
-                )
-            )
-    return results
-
-
-async def _prepare(job: _Job, bot: Bot, url: str, caption: str) -> list[dict[str, Any]]:
-    """Download the media, upload it to the buffer chat and cache the file ids."""
-    timer = StageTimer()
-    with structlog.contextvars.bound_contextvars(req_id=new_request_id()):
-        try:
-            async with AsyncExitStack() as stack:
-                with timer.stage("queue"):
-                    await stack.enter_async_context(url_lock(url))
-                return await _prepare_locked(job, bot, url, caption, timer)
-        finally:
-            job.timings.update(timer.summary())
-            log.info("inline_job_timing", url=url, **job.timings)
+async def _upload_downloaded(
+    bot: Bot, downloaded: DownloadResult, url: str, caption: str, timer: StageTimer
+) -> ui.MediaEntries:
+    """Upload the downloaded files and always remove their work directory."""
+    try:
+        return await _upload_all(bot, downloaded, caption, timer)
+    except Exception as exc:
+        log.exception("inline_upload_failed", url=url)
+        raise DeliveryError("ошибка при загрузке в Telegram") from exc
+    finally:
+        if downloaded.work_dir:
+            cleanup(downloaded.work_dir)
 
 
 async def _prepare_locked(
     job: _Job, bot: Bot, url: str, caption: str, timer: StageTimer
-) -> list[dict[str, Any]]:
+) -> ui.MediaEntries:
     with timer.stage("cache_lookup"):
         cached = await get_cached_media(url)
     if cached:
         return cached
 
-    with timer.stage("download"):
-        result = await download_media(url)
-    if not result.success:
-        raise DeliveryError(result.error or "не удалось скачать")
-
+    downloaded = await _download_or_fail(url, timer)
     job.uploading.set()
-    try:
-        items: list[dict[str, Any]] = []
-        for media_file in result.media_files:
-            input_file = FSInputFile(media_file.path)
-            with timer.stage("upload"):
-                if media_file.is_video:
-                    msg = await bot.send_video(
-                        chat_id=settings.BUFFER_CHAT_ID,
-                        video=input_file,
-                        caption=caption,
-                        supports_streaming=True,
-                        disable_notification=True,
-                    )
-                    if msg.video:
-                        items.append({"type": "video", "file_id": msg.video.file_id})
-                else:
-                    msg = await bot.send_photo(
-                        chat_id=settings.BUFFER_CHAT_ID,
-                        photo=input_file,
-                        caption=caption,
-                        disable_notification=True,
-                    )
-                    if msg.photo:
-                        items.append({"type": "photo", "file_id": msg.photo[-1].file_id})
-    except Exception as exc:
-        log.exception("inline_upload_failed", url=url)
-        raise DeliveryError("ошибка при загрузке в Telegram") from exc
-    finally:
-        if result.work_dir:
-            cleanup(result.work_dir)
-
-    if not items:
+    uploaded = await _upload_downloaded(bot, downloaded, url, caption, timer)
+    if not uploaded:
         raise DeliveryError("Telegram не принял файлы")
 
     with timer.stage("cache_write"):
-        await set_cached_media(url, items)
-    return items
+        await set_cached_media(url, uploaded)
+    return uploaded
+
+
+def _log_job_timing(job: _Job, url: str, timer: StageTimer) -> None:
+    job.timings.update(timer.summary())
+    log.info("inline_job_timing", url=url, **job.timings)
+
+
+async def _prepare(job: _Job, bot: Bot, url: str, caption: str) -> ui.MediaEntries:
+    """Download the media, upload it to the buffer chat and cache the file ids."""
+    timer = StageTimer()
+    with structlog.contextvars.bound_contextvars(req_id=new_request_id()):
+        async with contextlib.AsyncExitStack() as stack:
+            stack.callback(_log_job_timing, job, url, timer)
+            with timer.stage("queue"):
+                await stack.enter_async_context(url_lock(url))
+            return await _prepare_locked(job, bot, url, caption, timer)
+
+
+def _on_job_done(url: str, done: asyncio.Task[ui.MediaEntries]) -> None:
+    _jobs.pop(url, None)
+    if done.cancelled():
+        return
+    error = done.exception()
+    if error is not None:
+        log.warning("inline_job_failed", url=url, error=str(error))
 
 
 def _start_job(bot: Bot, url: str, caption: str) -> _Job:
     """Return the running preparation of this URL, starting one if needed."""
-    job = _jobs.get(url)
-    if job is not None:
-        return job
+    running = _jobs.get(url)
+    if running is not None:
+        return running
 
-    job = _jobs[url] = _Job()
-    task = job.task = asyncio.create_task(_prepare(job, bot, url, caption))
-
-    def finished(done: asyncio.Task[list[dict[str, Any]]]) -> None:
-        _jobs.pop(url, None)
-        if not done.cancelled() and (error := done.exception()) is not None:
-            log.warning("inline_job_failed", url=url, error=str(error))
-
-    task.add_done_callback(finished)
+    job = _Job()
+    _jobs[url] = job
+    task = asyncio.create_task(_prepare(job, bot, url, caption))
+    job.task = task
+    task.add_done_callback(lambda done: _on_job_done(url, done))
     return job
 
 
-@router.inline_query()
-async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
-    from utils import clean_url
+async def _answer_button(query: types.InlineQuery, label: str, start_parameter: str) -> None:
+    button = types.InlineQueryResultsButton(text=label, start_parameter=start_parameter)
+    await query.answer([], cache_time=SHORT_CACHE_SECONDS, button=button)
 
-    url = clean_url(query.query.strip()) if query.query.strip() else ""
 
-    if not url or not _is_supported_url(url):
-        await query.answer(
-            [],
-            cache_time=5,
-            button=InlineQueryResultsButton(
-                text="Отправь ссылку TikTok / Instagram",
-                start_parameter="help",
-            ),
+async def _answer_cached(
+    query: types.InlineQuery, url: str, cached: ui.MediaEntries, timer: StageTimer
+) -> None:
+    answers = ui.cached_results(_link_key(url), url, cached)
+    with timer.stage("answer"):
+        await query.answer(answers, cache_time=HIT_CACHE_SECONDS)
+    log.info("inline_timing", url=url, cache="hit", **timer.summary())
+
+
+async def _show_activity(bot: Bot, user_id: int) -> None:
+    with contextlib.suppress(Exception):
+        await bot.send_chat_action(chat_id=user_id, action=enums.ChatAction.UPLOAD_VIDEO)
+
+
+async def _answer_uncached(
+    query: types.InlineQuery, placeholder: types.InlineQueryResultArticle
+) -> None:
+    # Not cached by Telegram: the next query for this link must see the real media.
+    await query.answer([placeholder], cache_time=0, is_personal=True)
+
+
+async def _answer_placeholder(
+    query: types.InlineQuery, bot: Bot, url: str, timer: StageTimer
+) -> None:
+    key = _link_key(url)
+    await save_inline_link(key, url)
+    _start_job(bot, url, ui.build_caption(query.from_user, query.chat_type, url))
+
+    placeholder = ui.placeholder_result(key, url)
+    with timer.stage("answer"):
+        await asyncio.gather(
+            _answer_uncached(query, placeholder), _show_activity(bot, query.from_user.id)
         )
+    log.info("inline_placeholder", url=url, **timer.summary())
+
+
+@router.inline_query()
+async def on_inline_query(query: types.InlineQuery, bot: Bot) -> None:
+    url = _supported_url(query.query)
+    if not url:
+        await _answer_button(query, "Отправь ссылку TikTok / Instagram", "help")
         return
 
     if not settings.BUFFER_CHAT_ID:
         log.error("inline_no_buffer_chat", hint="Set BUFFER_CHAT_ID in .env")
-        await query.answer(
-            [],
-            cache_time=5,
-            button=InlineQueryResultsButton(
-                text="⚠️ Inline не настроен",
-                start_parameter="setup",
-            ),
-        )
+        await _answer_button(query, "⚠️ Inline не настроен", "setup")
         return
 
     timer = StageTimer()
     log.info("inline_query", url=url, user_id=query.from_user.id)
-
     with timer.stage("cache_lookup"):
         cached = await get_cached_media(url)
     if cached:
-        with timer.stage("answer"):
-            await query.answer(_cached_results(url, cached), cache_time=300)
-        log.info("inline_timing", url=url, cache="hit", **timer.summary())
+        await _answer_cached(query, url, cached, timer)
         return
-
-    key = _link_key(url)
-    await save_inline_link(key, url)
-    _start_job(bot, url, _build_caption(query.from_user, query.chat_type, url))
-
-    async def show_activity() -> None:
-        with contextlib.suppress(Exception):
-            await bot.send_chat_action(chat_id=query.from_user.id, action=ChatAction.UPLOAD_VIDEO)
-
-    placeholder = InlineQueryResultArticle(
-        id=PLACEHOLDER_PREFIX + key,
-        title="⏳ Отправить — медиа появится в сообщении",
-        input_message_content=InputTextMessageContent(
-            message_text=_status_text(TEXT_DOWNLOADING, url),
-            link_preview_options=NO_PREVIEW,
-        ),
-        reply_markup=_refresh_keyboard(key),
-    )
-
-    async def answer() -> None:
-        # Not cached by Telegram: the next query for this link must see the real media.
-        await query.answer([placeholder], cache_time=0, is_personal=True)
-
-    with timer.stage("answer"):
-        await asyncio.gather(answer(), show_activity())
-    log.info("inline_placeholder", url=url, **timer.summary())
+    await _answer_placeholder(query, bot, url, timer)
 
 
-async def _edit_status(bot: Bot, inline_message_id: str, text: str, key: str, button: str) -> None:
-    with contextlib.suppress(TelegramBadRequest):
+async def _edit_status(
+    bot: Bot, inline_message_id: str, status: str, url: str, button: str
+) -> None:
+    with contextlib.suppress(exceptions.TelegramBadRequest):
         await bot.edit_message_text(
-            text,
+            ui.STATUS_TEMPLATE.format(status=status, url=url),
             inline_message_id=inline_message_id,
-            link_preview_options=NO_PREVIEW,
-            reply_markup=_refresh_keyboard(key, button),
+            link_preview_options=ui.NO_PREVIEW,
+            reply_markup=ui.refresh_keyboard(_link_key(url), button),
         )
 
 
-async def _deliver(bot: Bot, inline_message_id: str, url: str, user: User) -> None:
+async def _remove_keyboard(bot: Bot, inline_message_id: str) -> None:
+    with contextlib.suppress(exceptions.TelegramBadRequest):
+        await bot.edit_message_reply_markup(inline_message_id=inline_message_id)
+
+
+class _Delivery:
+    """Replaces one sent placeholder with the media once it is ready."""
+
+    def __init__(self, bot: Bot, inline_message_id: str, url: str) -> None:
+        self.bot = bot
+        self.inline_message_id = inline_message_id
+        self.url = url
+        self.timer = StageTimer()
+        self.job: _Job | None = None
+
+    async def run(self, user: types.User) -> bool:
+        """Deliver the media, or show why it failed; tell whether it succeeded."""
+        try:
+            await self._deliver(user)
+        except DeliveryError as exc:
+            await _edit_status(
+                self.bot,
+                self.inline_message_id,
+                ui.failure_text(str(exc)),
+                self.url,
+                ui.TEXT_RETRY,
+            )
+            return False
+        except exceptions.TelegramBadRequest as exc:
+            log.warning("inline_edit_failed", url=self.url, error=str(exc))
+            return False
+        return True
+
+    async def _deliver(self, user: types.User) -> None:
+        entries = await get_cached_media(self.url)
+        if not entries:
+            entries = await self._await_job(user)
+        await self._show_media(entries)
+
+    async def _await_job(self, user: types.User) -> ui.MediaEntries:
+        caption = ui.build_caption(user, None, self.url)
+        self.job = _start_job(self.bot, self.url, caption)
+        task = self.job.task
+        if task is None:
+            raise DeliveryError("задача не запущена")
+        uploading = asyncio.create_task(self.job.uploading.wait())
+        with self.timer.stage("wait"), contextlib.ExitStack() as guard:
+            guard.callback(uploading.cancel)
+            await asyncio.wait({task, uploading}, return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                await _edit_status(
+                    self.bot, self.inline_message_id, ui.TEXT_UPLOADING, self.url, ui.TEXT_REFRESH
+                )
+            return await asyncio.shield(task)
+
+    async def _show_media(self, entries: ui.MediaEntries) -> None:
+        markup = ui.pager(_link_key(self.url), 0, len(entries))
+        with self.timer.stage("edit"):
+            await self.bot.edit_message_media(
+                _input_media(entries[0]),
+                inline_message_id=self.inline_message_id,
+                reply_markup=markup,
+            )
+            if markup is None:
+                await _remove_keyboard(self.bot, self.inline_message_id)
+
+
+def _log_delivery(delivery: _Delivery, succeeded: bool) -> None:
+    job = delivery.job
+    stages = {} if job is None else job.timings
+    timings = {f"job_{stage}": ms for stage, ms in stages.items()}
+    log.info(
+        "inline_timing",
+        url=delivery.url,
+        cache="hit" if job is None else "miss",
+        ok=succeeded,
+        **timings,
+        **delivery.timer.summary(),
+    )
+
+
+async def _deliver(bot: Bot, inline_message_id: str, url: str, user: types.User) -> None:
     """Replace a sent placeholder with the media once it is ready."""
     if inline_message_id in _delivering:
         return
     _delivering.add(inline_message_id)
-    timer = StageTimer()
-    key = _link_key(url)
-    job: _Job | None = None
-    try:
-        items = await get_cached_media(url)
-        if not items:
-            job = _start_job(bot, url, _build_caption(user, None, url))
-            if job.task is None:
-                raise DeliveryError("задача не запущена")
-            with timer.stage("wait"):
-                uploading = asyncio.create_task(job.uploading.wait())
-                try:
-                    await asyncio.wait({job.task, uploading}, return_when=asyncio.FIRST_COMPLETED)
-                    if not job.task.done():
-                        await _edit_status(
-                            bot,
-                            inline_message_id,
-                            _status_text(TEXT_UPLOADING, url),
-                            key,
-                            "🔄 Обновить",
-                        )
-                    items = await asyncio.shield(job.task)
-                finally:
-                    uploading.cancel()
-
-        pager = _pager(key, 0, len(items))
-        with timer.stage("edit"):
-            await bot.edit_message_media(
-                _input_media(items[0]), inline_message_id=inline_message_id, reply_markup=pager
-            )
-            if pager is None:
-                with contextlib.suppress(TelegramBadRequest):
-                    await bot.edit_message_reply_markup(inline_message_id=inline_message_id)
-        ok = True
-    except DeliveryError as exc:
-        ok = False
-        reason = html.escape(str(exc)[:300])
-        await _edit_status(
-            bot,
-            inline_message_id,
-            _status_text(f"❌ Не удалось скачать:\n<code>{reason}</code>", url),
-            key,
-            "🔁 Повторить",
-        )
-    except TelegramBadRequest as exc:
-        ok = False
-        log.warning("inline_edit_failed", url=url, error=str(exc))
-    finally:
-        _delivering.discard(inline_message_id)
-
-    job_timings = {f"job_{name}": value for name, value in (job.timings if job else {}).items()}
-    log.info(
-        "inline_timing",
-        url=url,
-        cache="miss" if job else "hit",
-        ok=ok,
-        **job_timings,
-        **timer.summary(),
-    )
+    delivery = _Delivery(bot, inline_message_id, url)
+    with contextlib.ExitStack() as guard:
+        guard.callback(_delivering.discard, inline_message_id)
+        succeeded = await delivery.run(user)
+    _log_delivery(delivery, succeeded)
 
 
-@router.chosen_inline_result(F.result_id.startswith(PLACEHOLDER_PREFIX))
-async def on_placeholder_sent(chosen: ChosenInlineResult, bot: Bot) -> None:
+@router.chosen_inline_result(ui.PLACEHOLDER_FILTER)
+async def on_placeholder_sent(chosen: types.ChosenInlineResult, bot: Bot) -> None:
     if not chosen.inline_message_id:
         return
     url = await get_inline_link(chosen.result_id.removeprefix(PLACEHOLDER_PREFIX))
@@ -421,8 +362,8 @@ async def on_placeholder_sent(chosen: ChosenInlineResult, bot: Bot) -> None:
         await _deliver(bot, chosen.inline_message_id, url, chosen.from_user)
 
 
-@router.callback_query(F.data.startswith(REFRESH_PREFIX))
-async def on_refresh(callback: CallbackQuery, bot: Bot) -> None:
+@router.callback_query(ui.REFRESH_FILTER)
+async def on_refresh(callback: types.CallbackQuery, bot: Bot) -> None:
     url = await get_inline_link((callback.data or "").removeprefix(REFRESH_PREFIX))
     if not url or not callback.inline_message_id:
         await callback.answer("Ссылка устарела, отправь её заново", show_alert=True)
@@ -434,25 +375,31 @@ async def on_refresh(callback: CallbackQuery, bot: Bot) -> None:
     await _deliver(bot, callback.inline_message_id, url, callback.from_user)
 
 
-@router.callback_query(F.data == PAGE_NOOP)
-async def on_page_counter(callback: CallbackQuery) -> None:
+@router.callback_query(ui.NOOP_FILTER)
+async def on_page_counter(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith(PAGE_PREFIX))
-async def on_page(callback: CallbackQuery, bot: Bot) -> None:
-    key, _, page = (callback.data or "").removeprefix(PAGE_PREFIX).rpartition(":")
+async def _flip_page(
+    bot: Bot, inline_message_id: str, key: str, entries: ui.MediaEntries, page: str
+) -> None:
+    index = int(page) % len(entries)
+    with contextlib.suppress(exceptions.TelegramBadRequest):
+        await bot.edit_message_media(
+            _input_media(entries[index]),
+            inline_message_id=inline_message_id,
+            reply_markup=ui.pager(key, index, len(entries)),
+        )
+
+
+@router.callback_query(ui.PAGE_FILTER)
+async def on_page(callback: types.CallbackQuery, bot: Bot) -> None:
+    payload = (callback.data or "").removeprefix(PAGE_PREFIX)
+    key, _, page = payload.rpartition(":")
     url = await get_inline_link(key)
-    items = await get_cached_media(url) if url else None
-    if not items or not callback.inline_message_id or not page.isdigit():
+    entries = await get_cached_media(url) if url else None
+    if not entries or not callback.inline_message_id or not page.isdigit():
         await callback.answer("Пост больше недоступен, отправь ссылку заново", show_alert=True)
         return
-
-    index = int(page) % len(items)
-    with contextlib.suppress(TelegramBadRequest):
-        await bot.edit_message_media(
-            _input_media(items[index]),
-            inline_message_id=callback.inline_message_id,
-            reply_markup=_pager(key, index, len(items)),
-        )
+    await _flip_page(bot, callback.inline_message_id, key, entries, page)
     await callback.answer()
