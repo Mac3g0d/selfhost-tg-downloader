@@ -32,7 +32,9 @@ RUN uv sync --frozen --no-dev --no-editable
 FROM builder AS ci
 RUN uv sync --frozen --no-editable
 ENV PATH="/app/.venv/bin:$PATH"
+COPY setup.cfg ./
 COPY tests/ tests/
+COPY scripts/ scripts/
 CMD ["pytest"]
 
 # Scanners live in their own image so lint and test jobs do not download them.

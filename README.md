@@ -105,7 +105,9 @@ On a cache miss the bot answers at once with a single placeholder result ("‚è≥ –
 
 **Buffer chat privacy:** uploads include a caption containing the requesting user's name, Telegram ID, username when available, chat type when available, and source URL. Keep this chat private. Buffer messages are not automatically removed.
 
-Telegram discards an inline answer that arrives later than roughly 8-10 seconds after the query (measured on a live bot; the limit is not documented), which is why a first-time download is not awaited before answering. Responses with cached media use a 300-second Telegram result cache, placeholder responses are not cached, and empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
+Telegram discards an inline answer that arrives later than roughly 8-10 seconds after the query (measured on a live bot; the limit is not documented), which is why a first-time download is not awaited before answering. The buttons find their link through the `inline_links` table of the cache database. It gets one small row per link and is never pruned, because a button on an old message stops working once its row is gone. At most 16 links are prepared at the same time; further inline queries get a "try later" button until one finishes.
+
+Responses with cached media use a 300-second Telegram result cache, placeholder responses are not cached, and empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
 
 ## Docker
 
@@ -163,9 +165,9 @@ The development dependencies are a uv dependency group, not a package extra:
 ```bash
 uv sync --frozen --group dev --python 3.14
 uv run --frozen pytest -q -o tmp_path_retention_policy=all
-uv run --frozen mypy src tests
-uv run --frozen ruff check src tests
-uv run --frozen ruff format --check src tests
+uv run --frozen mypy src tests scripts
+uv run --frozen ruff check src tests scripts
+uv run --frozen ruff format --check src tests scripts
 uv run --frozen ty check src tests
 uv run --frozen bandit -r src
 uv run --frozen flake8 src tests scripts
@@ -209,7 +211,7 @@ Startup diagnostics report configuration paths, authentication availability, and
 [CI and release](.github/workflows/ci.yml) runs on GitHub-hosted Ubuntu runners for every PR opening, new commit, and reopening, and for pushes to `main`. There are no path filters, and new commits do not cancel earlier check runs. Independent tag pushes do not trigger this pipeline.
 
 1. **Build once:** one `docker buildx bake` invocation creates the CI, runtime, and scan images using `uv sync --frozen`; each is exported as its own checksum-verified Actions artifact retained for one day, so a job downloads only the image it runs. Runtime dependencies are installed separately from developer tools, and the scanners are in neither image. Unchanged layers are restored from the Actions cache; the OS package layer is rebuilt at least once per UTC day so cached builds do not keep outdated packages.
-2. **Parallel jobs:** pytest (plus an installed-runtime import smoke test), mypy, Ruff lint/format, ty, Bandit, full-history Gitleaks, and Trivy against the actual runtime archive.
+2. **Parallel jobs:** pytest (plus an installed-runtime import smoke test), mypy, Ruff lint/format, flake8 with wemake-python-styleguide, ty, Bandit, full-history Gitleaks, and Trivy against the actual runtime archive.
 3. **Security gate:** Trivy fails on HIGH or CRITICAL findings, including unfixed findings. Scanner/network failures also fail the job. There are no blanket security bypasses or `continue-on-error` steps.
 4. **Merged-main-only release:** after *every* check passes for that exact main SHA, the GitHub API must associate it with a PR merged into `main` whose `merge_commit_sha` matches. Direct pushes and open PRs cannot publish. The version in `pyproject.toml` determines `vX.Y.Z`; an existing release for that version is skipped. API errors fail closed. A separate release job verifies the installed runtime version, pushes the **same checked image without rebuilding** to GHCR, verifies its image ID, and creates the tag and GitHub Release at the checked main SHA with its registry digest attached. Only that job has package/content write permissions.
 
