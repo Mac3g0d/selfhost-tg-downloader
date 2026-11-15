@@ -1,6 +1,6 @@
 import contextlib
 import hashlib
-import random
+import secrets
 
 import structlog
 from aiogram import Bot, Router
@@ -8,10 +8,10 @@ from aiogram.enums import ChatAction
 from aiogram.types import (
     FSInputFile,
     InlineQuery,
-    InlineQueryResult,
     InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
     InlineQueryResultsButton,
+    InlineQueryResultUnion,
 )
 
 from config import settings
@@ -109,15 +109,15 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
     cached_data = await get_cached_media(url)
     if cached_data:
         log.info("inline_cache_hit", url=url)
-        results: list[InlineQueryResult] = []
+        results: list[InlineQueryResultUnion] = []
         for i, item in enumerate(cached_data):
-            result_id = hashlib.md5(f"{url}:{i}".encode()).hexdigest()[:16]  # noqa: S324
+            result_id = hashlib.sha256(f"{url}:{i}".encode()).hexdigest()[:16]
             if item["type"] == "video":
                 results.append(
                     InlineQueryResultCachedVideo(
                         id=result_id,
                         video_file_id=item["file_id"],
-                        title=random.choice(TITLES),  # noqa: S311
+                        title=secrets.choice(TITLES),
                     )
                 )
             else:
@@ -149,15 +149,13 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
         return
 
     try:
-        results: list[InlineQueryResult] = []
+        uploaded_results: list[InlineQueryResultUnion] = []
         cache_items = []
         caption = _build_caption(query, url)
 
         for i, media_file in enumerate(result.media_files):
             input_file = FSInputFile(media_file.path)
-            result_id = hashlib.md5(  # noqa: S324
-                f"{url}:{i}".encode()
-            ).hexdigest()[:16]
+            result_id = hashlib.sha256(f"{url}:{i}".encode()).hexdigest()[:16]
 
             if media_file.is_video:
                 msg = await bot.send_video(
@@ -169,11 +167,11 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
                 )
                 if msg.video:
                     file_id = msg.video.file_id
-                    results.append(
+                    uploaded_results.append(
                         InlineQueryResultCachedVideo(
                             id=result_id,
                             video_file_id=file_id,
-                            title=random.choice(TITLES),  # noqa: S311
+                            title=secrets.choice(TITLES),
                         )
                     )
                     cache_items.append({"type": "video", "file_id": file_id})
@@ -186,7 +184,7 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
                 )
                 if msg.photo:
                     file_id = msg.photo[-1].file_id
-                    results.append(
+                    uploaded_results.append(
                         InlineQueryResultCachedPhoto(
                             id=result_id,
                             photo_file_id=file_id,
@@ -194,10 +192,10 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
                     )
                     cache_items.append({"type": "photo", "file_id": file_id})
 
-        if results:
+        if uploaded_results:
             await set_cached_media(url, cache_items)
-            await query.answer(results, cache_time=300)
-            log.info("inline_answered", url=url, result_count=len(results))
+            await query.answer(uploaded_results, cache_time=300)
+            log.info("inline_answered", url=url, result_count=len(uploaded_results))
         else:
             await query.answer([], cache_time=5)
 

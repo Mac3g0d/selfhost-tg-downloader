@@ -17,7 +17,7 @@ URL_PATTERN: re.Pattern[str] = re.compile(
     r"(?:www\.|vm\.|vt\.|p\.|m\.)?tiktok\.com"
     r"|(?:www\.)?instagram\.com"
     r"|(?:www\.)?instagr\.am"
-    r")/[\w\-./?%&=+]*",
+    r")/[\w\-./?%&=+@]*",
     re.IGNORECASE,
 )
 
@@ -44,9 +44,13 @@ async def _process_url(message: types.Message, url: str) -> None:
                 await message.reply_photo(photo=item["file_id"])
         return
 
+    bot = message.bot
+    if bot is None:
+        raise RuntimeError("Message is not bound to a bot")
+
     status_msg = await message.reply("⏳ Скачиваю...")
 
-    await message.bot.send_chat_action(  # type: ignore[union-attr]
+    await bot.send_chat_action(
         chat_id=message.chat.id,
         action=ChatAction.UPLOAD_VIDEO,
     )

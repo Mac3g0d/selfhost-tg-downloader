@@ -33,7 +33,7 @@ def test_collect_media_empty_dir(tmp_path: Path) -> None:
 def test_media_file_frozen() -> None:
     mf = MediaFile(path=Path("/tmp/test.mp4"), is_video=True)
     with pytest.raises(AttributeError):
-        mf.path = Path("/other")  # type: ignore[misc]
+        mf.__setattr__("path", Path("/other"))
 
 
 def test_collect_media_nested_dirs(tmp_path: Path) -> None:

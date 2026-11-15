@@ -14,14 +14,17 @@ dependencies = [
 ]
 
 [project.scripts]
-bot = "src.__main__:main"
+bot = "tg_downloader:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.26",
+    "pytest-mock>=3.14",
     "mypy>=1.15",
     "ruff>=0.11",
+    "ty>=0.0.104",
+    "bandit>=1.9.4",
 ]
 
 [build-system]
@@ -29,7 +32,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+only-include = [
+    "src/tg_downloader.py", "src/bot.py", "src/config.py",
+    "src/database.py", "src/healthcheck.py", "src/utils.py",
+    "src/downloader", "src/handlers",
+]
+dev-mode-dirs = ["src"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
 
 [tool.ruff]
 target-version = "py314"
@@ -50,10 +61,13 @@ ignore = [
 "tests/**" = ["S101", "S105", "S110"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["bot", "config", "database", "downloader", "handlers", "healthcheck", "tg_downloader", "utils"]
 
 [tool.mypy]
 python_version = "3.14"
+mypy_path = "src"
+explicit_package_bases = true
+exclude = ['^src/__init__\.py$']
 strict = true
 warn_return_any = true
 warn_unused_configs = true
