@@ -24,6 +24,15 @@ async def init_db() -> None:
             )
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inline_links (
+                key TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         await db.commit()
     log.info("database_initialized", path=settings.DATABASE_PATH)
 
@@ -47,3 +56,22 @@ async def set_cached_media(url: str, file_ids: list[dict[str, Any]]) -> None:
         )
         await db.commit()
     log.debug("media_cached", url=url)
+
+
+async def save_inline_link(key: str, url: str) -> None:
+    """Remember which URL a placeholder's button and result id stand for."""
+    async with aiosqlite.connect(settings.DATABASE_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO inline_links (key, url) VALUES (?, ?)",
+            (key, url),
+        )
+        await db.commit()
+
+
+async def get_inline_link(key: str) -> str | None:
+    async with (
+        aiosqlite.connect(settings.DATABASE_PATH) as db,
+        db.execute("SELECT url FROM inline_links WHERE key = ?", (key,)) as cursor,
+    ):
+        row = await cursor.fetchone()
+    return str(row[0]) if row else None

@@ -15,7 +15,7 @@ A self-hosted Telegram bot that turns TikTok and Instagram links into videos and
 - Return videos and photos, including multiple files from a single link.
 - Share media through Telegram inline mode, with a separate buffer chat for uploads.
 - Reuse cached media across ordinary messages and inline queries.
-- Configure download timeouts, Instagram authentication, and optional aria2 downloading.
+- Configure download timeouts and Instagram authentication.
 - Run locally or build a Docker image for a self-hosted deployment.
 
 The bot uses long polling: it needs outbound internet access, not a public webhook endpoint. Bot replies and inline result titles are currently in Russian; this README is in English.
@@ -72,14 +72,14 @@ Settings are loaded from `.env` in the working directory and from environment va
 | `BUFFER_CHAT_ID` | `0` | Buffer chat/channel ID for inline uploads. `0` disables inline delivery. |
 | `DATABASE_PATH` | `data/cache.db` | SQLite cache location; parent directories are created on startup. |
 | `DOWNLOAD_DIR` | `~/.cache/tg-downloads` | Download workspaces; the sample `.env` uses `/tmp/tg-downloads`, and Docker/Compose use `/app/downloads`. |
-| `DOWNLOAD_TIMEOUT` | `120` | Time limit, in seconds, for the gallery-dl subprocess. |
-| `GALLERY_DL_BIN` | `gallery-dl` | gallery-dl executable name or path. |
+| `DOWNLOAD_TIMEOUT` | `120` | Time limit, in seconds, for one gallery-dl download. |
+| `GALLERY_DL_BIN` | `gallery-dl` | Unused: gallery-dl now runs inside the bot process. Still accepted so existing `.env` files load. |
 | `COOKIES_FILE` | `cookies/instagram.txt` | Path to a Netscape-format cookies file, used only if the file exists. |
 | `INSTAGRAM_USER` | Empty | Optional Instagram username; requires `INSTAGRAM_PASS`. |
 | `INSTAGRAM_PASS` | Empty | Optional Instagram password; requires `INSTAGRAM_USER`. |
 | `MAX_TELEGRAM_FILE_SIZE` | `52428800` bytes (50 MiB) | Per-file upload threshold in the ordinary message handler. |
-| `USE_ARIA2` | `false` | Ask gallery-dl to use aria2; requires `aria2c` on `PATH`. |
-| `CONCURRENT_FRAGMENTS` | `5` | Value passed to gallery-dl as `ytdl.concurrent-fragments`. |
+| `USE_ARIA2` | `false` | Unused: gallery-dl has no aria2 support. Still accepted so existing `.env` files load. |
+| `CONCURRENT_FRAGMENTS` | `5` | Unused, for the same reason as `USE_ARIA2`. |
 
 The file-size setting is checked **after downloading**, not before. It is not a disk quota, does not raise Telegram's API limits, and is not currently applied by the inline handler. Actual download behavior depends on gallery-dl and its selected extractor/downloader.
 
@@ -87,7 +87,7 @@ The file-size setting is checked **after downloading**, not before. It is not a 
 
 Export cookies for an account signed in to Instagram in Netscape `cookies.txt` format, then save them as `cookies/instagram.txt` or set `COOKIES_FILE` to another readable file path. Cookies can expire and need to be refreshed.
 
-Alternatively, set both `INSTAGRAM_USER` and `INSTAGRAM_PASS`. When both are present, the downloader writes a temporary gallery-dl configuration and uses those credentials **instead of** the cookies file. Login challenges and site restrictions can still prevent downloads.
+Alternatively, set both `INSTAGRAM_USER` and `INSTAGRAM_PASS`. When both are present, the downloader passes those credentials to gallery-dl in memory and uses them **instead of** the cookies file. Login challenges and site restrictions can still prevent downloads.
 
 `COOKIES_FILE` must name a real file: setting it to a browser name such as `chrome` does not enable browser cookie extraction in this bot.
 
@@ -96,15 +96,18 @@ Treat cookies, tokens, passwords, and temporary authentication files as secrets.
 ## Inline mode
 
 1. Enable inline mode for your bot with BotFather's `/setinline` command.
-2. Create a private buffer channel or chat and give the bot permission to send videos and photos there. For a channel, add the bot as an administrator with posting permission.
-3. Set its numeric ID in `.env`, for example `BUFFER_CHAT_ID=-1001234567890`.
-4. Restart the bot, then type `@your_bot_username <supported URL>` in a Telegram chat and select a result.
+2. Enable inline feedback with BotFather's `/setinlinefeedback` command and choose 100%, so the bot learns when a result has been sent.
+3. Create a private buffer channel or chat and give the bot permission to send videos and photos there. For a channel, add the bot as an administrator with posting permission.
+4. Set its numeric ID in `.env`, for example `BUFFER_CHAT_ID=-1001234567890`.
+5. Restart the bot, then type `@your_bot_username <supported URL>` in a Telegram chat and select a result.
 
-On a cache miss, the bot downloads the media and uploads it to the buffer chat to obtain reusable Telegram file IDs. Each media item is a separate inline result, not an automatically sent album. A configured buffer chat is required even when the requested URL is already cached.
+On a cache miss the bot answers at once with a single placeholder result ("⏳ Голова, терпани малеха, качаю" with a refresh button) and prepares the media in the background: it downloads it and uploads it to the buffer chat to obtain reusable Telegram file IDs. When the placeholder has been sent to a chat, the bot edits that same message: first the status line, then the message is replaced with the video or photo and the button is removed. If the automatic update does not arrive - Telegram does not guarantee delivery of inline feedback - pressing the button does the same; after a failure the button retries. An inline message holds a single media and cannot become an album, so a post with several files becomes its first file with ◀️ / ▶️ buttons that flip through the others in the same message. Once cached, an inline query for the same link lists each file as a separate result that carries the same buttons. A configured buffer chat is required even when the requested URL is already cached.
 
 **Buffer chat privacy:** uploads include a caption containing the requesting user's name, Telegram ID, username when available, chat type when available, and source URL. Keep this chat private. Buffer messages are not automatically removed.
 
-A first-time download must finish before Telegram accepts the inline response; slow downloads can exceed Telegram's inline query deadline. Repeating the query after the media has been cached may help. Successful inline responses use a 300-second Telegram result cache; empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
+Telegram discards an inline answer that arrives later than roughly 8-10 seconds after the query (measured on a live bot; the limit is not documented), which is why a first-time download is not awaited before answering. The buttons find their link through the `inline_links` table of the cache database. It gets one small row per link and is never pruned, because a button on an old message stops working once its row is gone. At most 16 links are prepared at the same time; further inline queries get a "try later" button until one finishes.
+
+Responses with cached media use a 300-second Telegram result cache, placeholder responses are not cached, and empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
 
 ## Docker
 
@@ -136,6 +139,12 @@ docker build --target runtime -t selfhost-tg-downloader:local .
 
 Support is limited to the URL patterns accepted by the bot, even though gallery-dl supports other sites. Private content, expired links, login requirements, rate limits, and extractor changes can cause failures. There is no user allowlist or per-user quota in the current bot; restrict who can access your deployment if necessary.
 
+## Performance measurements
+
+Every request logs its stage durations (monotonic clock, milliseconds) under a shared `req_id`: `inline_timing` for inline queries and `message_timing` for chat messages, with `queue`, `cache_lookup`, `download`, `upload`, `cache_write`, `answer` and `total`. Concurrent requests for the same URL wait for the first one and are then served from the cache instead of downloading and uploading again.
+
+gallery-dl runs as a library inside the bot process, in a pool of up to 8 worker threads, so the interpreter start-up is paid once and HTTPS connections to the source sites are reused between requests. Two consequences: gallery-dl's built-in 6-12 s spacing between Instagram requests is switched off (it never applied when every download was a separate process) unless your own gallery-dl config sets `extractor.instagram.sleep-request`; and a download that hits `DOWNLOAD_TIMEOUT` is reported at once but its worker stops only at its next step, because a thread cannot be killed.
+
 ## Local development and checks
 
 The development dependencies are a uv dependency group, not a package extra:
@@ -148,6 +157,7 @@ uv run --frozen ruff check src tests
 uv run --frozen ruff format --check src tests
 uv run --frozen ty check src tests
 uv run --frozen bandit -r src
+uv run --frozen flake8 src tests
 ```
 
 For the containerized toolchain, build the CI target (developer tools) and the scan target (Gitleaks and Trivy):
@@ -177,7 +187,7 @@ src/
   database.py        SQLite file-ID cache
   utils.py           URL cleanup
   handlers/          Commands, ordinary messages, inline queries
-  downloader/        gallery-dl subprocess and media collection
+  downloader/        in-process gallery-dl jobs and media collection
 tests/              Automated tests
 ```
 
@@ -188,7 +198,7 @@ Startup diagnostics report configuration paths, authentication availability, and
 [CI and release](.github/workflows/ci.yml) runs on GitHub-hosted Ubuntu runners for every PR opening, new commit, and reopening, and for pushes to `main`. There are no path filters, and new commits do not cancel earlier check runs. Independent tag pushes do not trigger this pipeline.
 
 1. **Build once:** one `docker buildx bake` invocation creates the CI, runtime, and scan images using `uv sync --frozen`; each is exported as its own checksum-verified Actions artifact retained for one day, so a job downloads only the image it runs. Runtime dependencies are installed separately from developer tools, and the scanners are in neither image. Unchanged layers are restored from the Actions cache; the OS package layer is rebuilt at least once per UTC day so cached builds do not keep outdated packages.
-2. **Parallel jobs:** pytest (plus an installed-runtime import smoke test), mypy, Ruff lint/format, ty, Bandit, full-history Gitleaks, and Trivy against the actual runtime archive.
+2. **Parallel jobs:** pytest (plus an installed-runtime import smoke test), mypy, Ruff lint/format, flake8 with wemake-python-styleguide, ty, Bandit, full-history Gitleaks, and Trivy against the actual runtime archive.
 3. **Security gate:** Trivy fails on HIGH or CRITICAL findings, including unfixed findings. Scanner/network failures also fail the job. There are no blanket security bypasses or `continue-on-error` steps.
 4. **Merged-main-only release:** after *every* check passes for that exact main SHA, the GitHub API must associate it with a PR merged into `main` whose `merge_commit_sha` matches. Direct pushes and open PRs cannot publish. The version in `pyproject.toml` determines `vX.Y.Z`; an existing release for that version is skipped. API errors fail closed. A separate release job verifies the installed runtime version, pushes the **same checked image without rebuilding** to GHCR, verifies its image ID, and creates the tag and GitHub Release at the checked main SHA with its registry digest attached. Only that job has package/content write permissions.
 

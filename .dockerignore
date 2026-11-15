@@ -20,5 +20,3 @@ cookies/
 
 .test-runs/
 *.log
-
-.codegraph/

@@ -1,21 +1,30 @@
+"""Isolate the environment before anything imports the application; register the fixtures.
+
+``config.settings`` is built on first import, so the environment is prepared here, in the
+conftest body, before pytest imports the fixture plugin module below (it imports the app).
+"""
+
+import atexit
+
 import pytest
+from faker import Faker
+
+from tests.constants import EMPTY_TEXT
 
 
-def pytest_configure(config: pytest.Config) -> None:
-    # Settings are constructed during collection, before fixtures run.
+def isolate() -> pytest.MonkeyPatch:
+    """Point every variable the settings read at a harmless value; return the undo handle."""
+    faker = Faker()
     env = pytest.MonkeyPatch()
-    env.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
-    env.setenv("COOKIES_FILE", "")
-    env.setenv("INSTAGRAM_USER", "")
-    env.setenv("INSTAGRAM_PASS", "")
-    env.setenv("BUFFER_CHAT_ID", "0")
-    config.add_cleanup(env.undo)
+    secret = faker.pystr(min_chars=35, max_chars=35)
+    env.setenv("TELEGRAM_BOT_TOKEN", f"{faker.pyint()}:{secret}")
+    env.setenv("COOKIES_FILE", EMPTY_TEXT)
+    env.setenv("INSTAGRAM_USER", EMPTY_TEXT)
+    env.setenv("INSTAGRAM_PASS", EMPTY_TEXT)
+    env.setenv("BUFFER_CHAT_ID", str(0))
+    return env
 
 
-@pytest.fixture(autouse=True)
-def _test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    from config import Settings, settings
+atexit.register(isolate().undo)
 
-    # Mutate the shared object, not the config module's binding: callers import it.
-    for name, value in Settings().model_dump().items():
-        monkeypatch.setattr(settings, name, value)
+pytest_plugins = ("tests.fixtures",)

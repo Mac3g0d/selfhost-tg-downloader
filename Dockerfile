@@ -32,6 +32,7 @@ RUN uv sync --frozen --no-dev --no-editable
 FROM builder AS ci
 RUN uv sync --frozen --no-editable
 ENV PATH="/app/.venv/bin:$PATH"
+COPY setup.cfg ./
 COPY tests/ tests/
 CMD ["pytest"]
 

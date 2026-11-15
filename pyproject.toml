@@ -25,6 +25,9 @@ dev = [
     "ruff>=0.11",
     "ty>=0.0.104",
     "bandit>=1.9.4",
+    "wemake-python-styleguide>=1.8",
+    "polyfactory>=2.18",
+    "pytest-timeout>=2.4",
 ]
 
 [build-system]
@@ -33,8 +36,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 only-include = [
-    "src/tg_downloader.py", "src/bot.py", "src/config.py",
-    "src/database.py", "src/healthcheck.py", "src/utils.py",
+    "src/tg_downloader.py", "src/bot.py", "src/config.py", "src/constants.py",
+    "src/database.py", "src/healthcheck.py", "src/inflight.py", "src/timing.py", "src/utils.py",
     "src/downloader", "src/handlers",
 ]
 dev-mode-dirs = ["src"]
@@ -56,12 +59,14 @@ ignore = [
     "S603", "S607", "S108",
     "RUF001", "ASYNC240",
 ]
+# wemake-python-styleguide codes used in `# noqa` comments are checked by flake8.
+external = ["WPS"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S110"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["bot", "config", "database", "downloader", "handlers", "healthcheck", "tg_downloader", "utils"]
+known-first-party = ["bot", "config", "constants", "database", "downloader", "handlers", "healthcheck", "inflight", "tg_downloader", "timing", "utils"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -78,7 +83,7 @@ no_implicit_optional = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["structlog.*"]
+module = ["structlog.*", "gallery_dl.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
@@ -90,3 +95,4 @@ warn_required_dynamic_aliases = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["error"]
+session_timeout = 10

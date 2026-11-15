@@ -1,3 +1,1 @@
-from downloader.gallery import download_media
-
-__all__ = ["download_media"]
+from downloader.gallery import download_media as download_media

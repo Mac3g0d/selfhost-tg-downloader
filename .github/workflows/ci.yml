@@ -126,6 +126,22 @@ jobs:
       - name: ruff
         run: docker run downloader-ci:checked sh -ec "ruff check src tests && ruff format --check src tests"
 
+  flake8:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-ci
+          path: .ci-artifacts/ci
+      - name: Verify and load CI image
+        run: |
+          (cd .ci-artifacts/ci && sha256sum --check SHA256SUMS)
+          docker load -i .ci-artifacts/ci/image.tar
+      - name: flake8 (wemake-python-styleguide)
+        run: docker run downloader-ci:checked flake8 src tests
+
   ty:
     needs: build
     runs-on: ubuntu-latest
@@ -199,7 +215,7 @@ jobs:
 
   release-eligibility:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build, pytest, mypy, ruff, ty, bandit, gitleaks, trivy]
+    needs: [build, pytest, mypy, ruff, flake8, ty, bandit, gitleaks, trivy]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -223,7 +239,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-eligibility.outputs.merged == 'true'
-    needs: [build, pytest, mypy, ruff, ty, bandit, gitleaks, trivy, release-eligibility]
+    needs: [build, pytest, mypy, ruff, flake8, ty, bandit, gitleaks, trivy, release-eligibility]
     concurrency:
       group: release-${{ github.repository }}
       cancel-in-progress: false

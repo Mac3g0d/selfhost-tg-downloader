@@ -34,8 +34,8 @@ def _configure_logging() -> None:
     )
 
     root_logger = logging.getLogger()
-    for handler in root_logger.handlers:
-        handler.setFormatter(formatter)
+    for log_handler in root_logger.handlers:
+        log_handler.setFormatter(formatter)
 
     structlog.configure(
         processors=[

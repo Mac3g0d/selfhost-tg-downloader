@@ -1,20 +1,26 @@
 import asyncio
-import json
-import os
 import shutil
 import tempfile
-import uuid
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
 
 from config import settings
+from constants import (
+    IMAGE_EXTENSIONS,
+    MAX_PARALLEL_DOWNLOADS,
+    MS_PER_SECOND,
+    VIDEO_EXTENSIONS,
+    WORK_DIR_PREFIX,
+    WORKER_PREFIX,
+)
+from downloader import gdl_job
 
 log = structlog.get_logger()
-
-VIDEO_EXTENSIONS: frozenset[str] = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi"})
-IMAGE_EXTENSIONS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +35,7 @@ class DownloadResult:
     media_files: list[MediaFile] = field(default_factory=list)
     error: str = ""
     work_dir: Path | None = None
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 def _collect_media(directory: Path) -> list[MediaFile]:
@@ -44,108 +51,106 @@ def _collect_media(directory: Path) -> list[MediaFile]:
     return files
 
 
-def _build_gallery_dl_config(work_dir: Path) -> Path | None:
-    if not (settings.INSTAGRAM_USER and settings.INSTAGRAM_PASS):
-        return None
-
-    config = {
-        "extractor": {
-            "instagram": {
-                "username": settings.INSTAGRAM_USER,
-                "password": settings.INSTAGRAM_PASS,
-            }
-        }
-    }
-
-    config_path = work_dir / "gallery-dl.json"
-    config_path.write_text(json.dumps(config))
-    return config_path
+_executor = ThreadPoolExecutor(
+    max_workers=MAX_PARALLEL_DOWNLOADS, thread_name_prefix=WORKER_PREFIX
+)
 
 
-def _build_cmd(work_dir: Path) -> list[str]:
-    cmd: list[str] = [
-        settings.gallery_dl_bin,
-        "--no-mtime",
-        "--dest",
-        str(work_dir),
-    ]
+class _Download:
+    """One download request: its work directory, timing and outcome."""
 
-    config_path = _build_gallery_dl_config(work_dir)
-    if config_path:
-        cmd.extend(["--config", str(config_path)])
-    elif settings.COOKIES_FILE and Path(settings.COOKIES_FILE).is_file():
-        cmd.extend(["--cookies", settings.COOKIES_FILE])
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.cancel = threading.Event()
+        Path(settings.DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
+        work_dir = tempfile.mkdtemp(dir=settings.DOWNLOAD_DIR, prefix=WORK_DIR_PREFIX)
+        self.work_dir = Path(work_dir)
+        self._started = time.perf_counter()
 
-    if settings.USE_ARIA2:
-        cmd.extend(["--downloader", "aria2"])
+    async def run(self) -> DownloadResult:
+        """Run the job in the executor.
 
-    # Speed up yt-dlp (used by gallery-dl for many sites)
-    cmd.extend(
-        [
-            "--option",
-            f"ytdl.concurrent-fragments={settings.CONCURRENT_FRAGMENTS}",
-        ]
-    )
-
-    return cmd
-
-
-async def download_media(url: str) -> DownloadResult:
-    os.makedirs(settings.DOWNLOAD_DIR, exist_ok=True)
-    work_dir = Path(
-        tempfile.mkdtemp(dir=settings.DOWNLOAD_DIR, prefix=f"dl-{uuid.uuid4().hex[:8]}-")
-    )
-
-    cmd = _build_cmd(work_dir)
-    cmd.extend(["--", url])
-
-    log.info("starting_download", url=url, cmd=" ".join(cmd))
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        `gdl_job.run_job` is looked up on the module at call time so that
+        tests can replace it.
+        """
+        log.info("starting_download", url=self.url)
+        future = asyncio.get_running_loop().run_in_executor(
+            _executor, gdl_job.run_job, self.url, self.work_dir, self.cancel
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=settings.DOWNLOAD_TIMEOUT,
-        )
+        try:
+            status, errors, first_file_at = await asyncio.wait_for(
+                asyncio.shield(future), timeout=settings.DOWNLOAD_TIMEOUT
+            )
+        except TimeoutError:
+            return self._timed_out(future)
+        except Exception:
+            return self._crashed()
+        return self._finish(status, errors, first_file_at)
 
-        if proc.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            log.error("gallery_dl_failed", returncode=proc.returncode, stderr=err_msg)
-            cleanup(work_dir)
-            return DownloadResult(success=False, error=err_msg or "gallery-dl exited with error")
+    def _timed_out(self, future: asyncio.Future[tuple[int, str, float | None]]) -> DownloadResult:
+        """Give up on a timed-out job.
 
-        log.debug("gallery_dl_stdout", output=stdout.decode(errors="replace").strip())
-
-    except TimeoutError:
-        log.error("download_timeout", url=url, timeout=settings.DOWNLOAD_TIMEOUT)
-        proc.kill()
-        cleanup(work_dir)
+        A thread cannot be killed: the job is only asked to stop at its next
+        step, and its directory is removed in the done callback, once it has
+        really finished writing.
+        """
+        log.error("download_timeout", url=self.url, timeout=settings.DOWNLOAD_TIMEOUT)
+        self.cancel.set()
+        future.add_done_callback(lambda _: cleanup(self.work_dir))
         return DownloadResult(
             success=False, error=f"Download timed out ({settings.DOWNLOAD_TIMEOUT}s)"
         )
 
-    except FileNotFoundError:
-        log.error("gallery_dl_not_found", binary=settings.gallery_dl_bin)
-        cleanup(work_dir)
-        return DownloadResult(success=False, error="gallery-dl is not installed or not in PATH")
+    def _crashed(self) -> DownloadResult:
+        log.exception("gallery_dl_crashed", url=self.url)
+        return self._fail("gallery-dl failed unexpectedly")
 
-    media_files = _collect_media(work_dir)
-    if not media_files:
-        log.warning("no_media_files", url=url)
-        cleanup(work_dir)
-        return DownloadResult(success=False, error="No media files found after download")
+    def _finish(self, status: int, errors: str, first_file_at: float | None) -> DownloadResult:
+        finished = time.perf_counter()
+        media_files = _collect_media(self.work_dir)
 
-    log.info("download_complete", url=url, file_count=len(media_files), work_dir=str(work_dir))
-    return DownloadResult(success=True, media_files=media_files, work_dir=work_dir)
+        if status != 0:
+            log.error("gallery_dl_failed", status=status, stderr=errors)
+            return self._fail(errors or "gallery-dl exited with error")
+
+        if not media_files:
+            log.warning("no_media_files", url=self.url)
+            return self._fail("No media files found after download")
+
+        timings = self._timings(finished, first_file_at)
+        log.info(
+            "download_complete",
+            url=self.url,
+            file_count=len(media_files),
+            total_bytes=sum(media.path.stat().st_size for media in media_files),
+            status=status,
+            work_dir=str(self.work_dir),
+            **timings,
+        )
+        return DownloadResult(
+            success=True, media_files=media_files, work_dir=self.work_dir, timings=timings
+        )
+
+    def _timings(self, finished: float, first_file_at: float | None) -> dict[str, float]:
+        timings = {"download_ms": round((finished - self._started) * MS_PER_SECOND, 1)}
+        if first_file_at is not None:
+            timings["extract_ms"] = round((first_file_at - self._started) * MS_PER_SECOND, 1)
+            timings["fetch_ms"] = round((finished - first_file_at) * MS_PER_SECOND, 1)
+        return timings
+
+    def _fail(self, error: str) -> DownloadResult:
+        cleanup(self.work_dir)
+        return DownloadResult(success=False, error=error)
+
+
+async def download_media(url: str) -> DownloadResult:
+    return await _Download(url).run()
 
 
 def cleanup(directory: Path) -> None:
     try:
         shutil.rmtree(directory, ignore_errors=True)
-        log.debug("cleanup_done", directory=str(directory))
     except Exception:
         log.exception("cleanup_failed", directory=str(directory))
+    else:
+        log.debug("cleanup_done", directory=str(directory))
