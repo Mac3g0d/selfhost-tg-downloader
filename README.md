@@ -1,101 +1,147 @@
 # selfhost-tg-downloader
 
-**A self-hosted Telegram bot that turns TikTok and Instagram links into videos and photos in your chats.**
-
 [![CI](https://github.com/Mac3g0d/selfhost-tg-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/Mac3g0d/selfhost-tg-downloader/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/dependencies-uv-DE5FE9)](https://docs.astral.sh/uv/)
-[![aiogram](https://img.shields.io/badge/aiogram-3.x-26A5E4?logo=telegram)](https://docs.aiogram.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![aiogram 3](https://img.shields.io/badge/aiogram-3-26A5E4?logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
 
-## What it does
+A self-hosted Telegram bot that turns TikTok and Instagram links into videos and photos in your chat. Downloads run on your server through **gallery-dl**; a SQLite cache reuses Telegram file IDs for links the bot has already processed.
 
-- Detects TikTok and Instagram URLs in text messages, downloads media with `gallery-dl`, and replies with video or photo files.
-- Reuses Telegram `file_id` values from a SQLite cache rather than downloading the same normalized URL again.
-- Supports inline queries: type `@your_bot <URL>` in a chat after enabling inline mode through BotFather.
-- Accepts Instagram credentials or an exported cookies file; credentials take precedence.
-- Runs as a non-root container, with structured logging to stdout and `ffmpeg` available for media processing.
+## Features
 
-The interface and bot messages are currently in Russian. This is a polling bot: no inbound HTTP endpoint, webhook, or automatic deployment is configured.
+- Detect supported links in text messages and reply with the downloaded media.
+- Handle TikTok links, including `vm.tiktok.com` and `vt.tiktok.com`, plus Instagram and `instagr.am` links.
+- Return videos and photos, including multiple files from a single link.
+- Share media through Telegram inline mode, with a separate buffer chat for uploads.
+- Reuse cached media across ordinary messages and inline queries.
+- Configure download timeouts, Instagram authentication, and optional aria2 downloading.
+- Run locally or build a Docker image for a self-hosted deployment.
 
-## Quick start with Docker
+The bot uses long polling: it needs outbound internet access, not a public webhook endpoint. Bot replies and inline result titles are currently in Russian; this README is in English.
 
-Requires Docker Engine and Docker Compose v2.
+## Technology
+
+| Component | Technology |
+| --- | --- |
+| Runtime | Python 3.14+ |
+| Telegram API | aiogram 3 |
+| Media extraction | gallery-dl; FFmpeg for media processing |
+| Cache | SQLite via aiosqlite |
+| Configuration | pydantic-settings and `.env` |
+| Logging | structlog to standard output |
+| Dependency management | uv and `uv.lock` |
+| Containers | Docker and Docker Compose |
+
+## Quickstart
+
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.14.
+- FFmpeg installed and available on `PATH`.
+- A Telegram bot token from [@BotFather](https://t.me/BotFather).
+- Network access to Telegram and the source sites.
 
 ```bash
 git clone https://github.com/Mac3g0d/selfhost-tg-downloader.git
 cd selfhost-tg-downloader
 cp .env.example .env
-# Edit .env: set TELEGRAM_BOT_TOKEN to your own BotFather token.
+```
+
+Edit `.env` and replace `TELEGRAM_BOT_TOKEN` with your own token. Do not use the example token or commit your credentials.
+
+```bash
+uv python install 3.14
+uv sync --frozen --python 3.14
+uv run --frozen python -m src
+```
+
+Run commands from the repository root so relative configuration and data paths resolve correctly. The installed `src` package uses package-qualified imports; no `PYTHONPATH` override is needed.
+
+Open a private conversation with your bot, send `/start`, then send a supported TikTok or Instagram URL. For groups, configure the bot's permissions and BotFather privacy settings so it receives the messages you want it to process. Only text messages are scanned; media captions are not scanned.
+
+Instagram downloads may require authentication; see [Instagram authentication](#instagram-authentication).
+
+## Configuration
+
+Settings are loaded from `.env` in the working directory and from environment variables; environment variables take precedence. Environment variable names are case-insensitive.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Required | Bot token issued by BotFather. |
+| `BUFFER_CHAT_ID` | `0` | Buffer chat/channel ID for inline uploads. `0` disables inline delivery. |
+| `DATABASE_PATH` | `data/cache.db` | SQLite cache location; parent directories are created on startup. |
+| `DOWNLOAD_DIR` | `~/.cache/tg-downloads` | Download workspaces; the sample `.env` uses `/tmp/tg-downloads`, and Docker/Compose use `/app/downloads`. |
+| `DOWNLOAD_TIMEOUT` | `120` | Time limit, in seconds, for the gallery-dl subprocess. |
+| `GALLERY_DL_BIN` | `gallery-dl` | gallery-dl executable name or path. |
+| `COOKIES_FILE` | `cookies/instagram.txt` | Path to a Netscape-format cookies file, used only if the file exists. |
+| `INSTAGRAM_USER` | Empty | Optional Instagram username; requires `INSTAGRAM_PASS`. |
+| `INSTAGRAM_PASS` | Empty | Optional Instagram password; requires `INSTAGRAM_USER`. |
+| `MAX_TELEGRAM_FILE_SIZE` | `52428800` bytes (50 MiB) | Per-file upload threshold in the ordinary message handler. |
+| `USE_ARIA2` | `false` | Ask gallery-dl to use aria2; requires `aria2c` on `PATH`. |
+| `CONCURRENT_FRAGMENTS` | `5` | Value passed to gallery-dl as `ytdl.concurrent-fragments`. |
+
+The file-size setting is checked **after downloading**, not before. It is not a disk quota, does not raise Telegram's API limits, and is not currently applied by the inline handler. Actual download behavior depends on gallery-dl and its selected extractor/downloader.
+
+### Instagram authentication
+
+Export cookies for an account signed in to Instagram in Netscape `cookies.txt` format, then save them as `cookies/instagram.txt` or set `COOKIES_FILE` to another readable file path. Cookies can expire and need to be refreshed.
+
+Alternatively, set both `INSTAGRAM_USER` and `INSTAGRAM_PASS`. When both are present, the downloader writes a temporary gallery-dl configuration and uses those credentials **instead of** the cookies file. Login challenges and site restrictions can still prevent downloads.
+
+`COOKIES_FILE` must name a real file: setting it to a browser name such as `chrome` does not enable browser cookie extraction in this bot.
+
+Treat cookies, tokens, passwords, and temporary authentication files as secrets. Ensure only the bot's operating-system account can read them.
+
+## Inline mode
+
+1. Enable inline mode for your bot with BotFather's `/setinline` command.
+2. Create a private buffer channel or chat and give the bot permission to send videos and photos there. For a channel, add the bot as an administrator with posting permission.
+3. Set its numeric ID in `.env`, for example `BUFFER_CHAT_ID=-1001234567890`.
+4. Restart the bot, then type `@your_bot_username <supported URL>` in a Telegram chat and select a result.
+
+On a cache miss, the bot downloads the media and uploads it to the buffer chat to obtain reusable Telegram file IDs. Each media item is a separate inline result, not an automatically sent album. A configured buffer chat is required even when the requested URL is already cached.
+
+**Buffer chat privacy:** uploads include a caption containing the requesting user's name, Telegram ID, username when available, chat type when available, and source URL. Keep this chat private. Buffer messages are not automatically removed.
+
+A first-time download must finish before Telegram accepts the inline response; slow downloads can exceed Telegram's inline query deadline. Repeating the query after the media has been cached may help. Successful inline responses use a 300-second Telegram result cache; empty/error responses use 5 seconds. These are separate from the persistent SQLite cache.
+
+## Docker
+
+Install Docker Engine with the Compose plugin, create `.env` as above, and place any required cookies in `cookies/` before starting:
+
+```bash
 docker compose up -d --build
 docker compose logs -f bot
 ```
 
-Compose builds the **runtime** target. Named volumes persist downloads and `/app/data` (the SQLite cache); `./cookies` is mounted read-only. The image runs as UID/GID `1000:1000`; ensure any replacement bind mounts are writable by that user. Compose rotates container logs (10 MB, three files). No token or cookies should be committed to Git.
+The Compose service is named `bot`. It reads `.env`, mounts `cookies/` read-only at `/app/cookies`, and sets `COOKIES_FILE=/app/cookies/instagram.txt` and `DOWNLOAD_DIR=/app/downloads`. These Compose environment entries override the values in `.env`.
 
-To build the runtime image separately:
+Named volumes persist downloads at `/app/downloads` and the SQLite cache at `/app/data` (default `DATABASE_PATH=data/cache.db` under `/app`). Compose rotates Docker's `json-file` logs at 10 MB per file and retains three files. The runtime runs as UID/GID `1000:1000`; any replacement bind mounts must have compatible read/write permissions. Back up the cache if you want to retain mappings. Cookies stay in the separate read-only mount, never in the image.
+
+For a standalone source build:
 
 ```bash
 docker build --target runtime -t selfhost-tg-downloader:local .
 ```
 
-Release images are intended for `ghcr.io/mac3g0d/selfhost-tg-downloader:vX.Y.Z` **after a successful tagged release**. The existence of this pipeline does not mean an image has already been published.
+## Cache behavior and limitations
 
-## Configuration
+- The database stores URL-to-Telegram-file-ID mappings, not copies of the downloaded media. Ordinary messages and inline mode share it.
+- URL cleanup strips query strings, fragments, and trailing slashes. It does not resolve short links or merge different hostnames into one canonical key.
+- Cache entries have no automatic expiry, size limit, or stale-file-ID recovery. A failed cached Telegram send does not automatically trigger a fresh download.
+- The cache is keyed by URL, not by user or content hash. Simultaneous misses for the same link can still start separate downloads.
+- Only successfully uploaded items are cached. If an item is skipped or an upload fails, a cached link may represent only part of the original post.
+- Temporary workspaces are cleaned up by the download/send paths, but process crashes or forced shutdowns can leave files behind. Monitor free disk space.
 
-Settings are loaded from environment variables and an optional `.env` file. Environment names are case-insensitive.
+Support is limited to the URL patterns accepted by the bot, even though gallery-dl supports other sites. Private content, expired links, login requirements, rate limits, and extractor changes can cause failures. There is no user allowlist or per-user quota in the current bot; restrict who can access your deployment if necessary.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Required | BotFather token; keep private. |
-| `BUFFER_CHAT_ID` | `0` | Private buffer chat/channel ID for inline uploads; `0` disables inline delivery. |
-| `DATABASE_PATH` | `data/cache.db` | SQLite cache file, relative to the working directory. |
-| `DOWNLOAD_DIR` | `~/.cache/tg-downloads` | Download workspace; the container and Compose override this to `/app/downloads`. The sample `.env` overrides it to `/tmp/tg-downloads` for local use. |
-| `DOWNLOAD_TIMEOUT` | `120` | Download subprocess timeout, in seconds. |
-| `COOKIES_FILE` | `cookies/instagram.txt` | Optional cookies file; Compose uses `/app/cookies/instagram.txt`. See [cookies setup](cookies/README.md). |
-| `INSTAGRAM_USER` / `INSTAGRAM_PASS` | Empty | Optional Instagram credentials; both are required to use this authentication method. |
-| `MAX_TELEGRAM_FILE_SIZE` | `52428800` | Per-file upload check in the regular message handler (50 MiB). |
-| `GALLERY_DL_BIN` | `gallery-dl` | Downloader executable. |
-| `USE_ARIA2` | `false` | Pass an aria2 downloader option; requires an independently installed `aria2c` executable. Not included in the runtime image. |
-| `CONCURRENT_FRAGMENTS` | `5` | Forwarded as the `ytdl.concurrent-fragments` option. |
+## Local development and checks
 
-### Inline setup
-
-1. Enable inline mode for your bot through BotFather.
-2. Create a private buffer channel, add the bot with permission to post, and set `BUFFER_CHAT_ID` to its numeric ID.
-3. Restart the bot and query `@your_bot <supported URL>`.
-
-On a cache miss, inline media is uploaded to that buffer to obtain reusable Telegram file IDs. Video/photo entries become inline results. Captions in the buffer include the requesting user's name, ID, optional username, chat type, and source URL: choose who can access that channel accordingly.
-
-## How it works
-
-```mermaid
-flowchart LR
-    Telegram[Telegram message or inline query] --> URL[Extract and normalize URL]
-    URL --> Cache[(SQLite file_id cache)]
-    Cache -->|hit| Reply[Reply using Telegram file IDs]
-    Cache -->|miss| Download[gallery-dl + ffmpeg]
-    Download --> Upload[Upload to chat or inline buffer]
-    Upload --> Cache
-    Upload --> Reply
-```
-
-The `src` Python package contains configuration, startup, handlers, downloader, and database modules. Tests live in `tests/`. [agents.md](agents.md) contains additional architectural notes.
-
-Normalization strips query parameters, fragments, and trailing slashes before cache lookup. Cache entries are shared between regular and inline handlers and stored without an expiry policy. A cache hit does not re-check the source site. Download workspaces are normally cleaned after processing; buffer messages remain in Telegram.
-
-## Local development
-
-Install Python 3.14+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and `ffmpeg`. Set up `.env` as above. Development tools are a dependency **group**, not an optional extra:
+The development dependencies are a uv dependency group, not a package extra:
 
 ```bash
-uv sync --frozen --group dev
-uv run --frozen python -m src
-```
-
-Run the same source checks as CI:
-
-```bash
+uv sync --frozen --group dev --python 3.14
 uv run --frozen pytest -q -o tmp_path_retention_policy=all
 uv run --frozen mypy src
 uv run --frozen ruff check src tests
@@ -104,17 +150,34 @@ uv run --frozen ty check src
 uv run --frozen bandit -r src
 ```
 
-Or run tooling in the CI image:
+For the containerized toolchain, build the CI target:
 
 ```bash
 docker build --target ci -t selfhost-tg-downloader:ci .
 docker run selfhost-tg-downloader:ci pytest -q -o tmp_path_retention_policy=all
-docker run -v "$PWD:/repo:ro" selfhost-tg-downloader:ci gitleaks git /repo --log-opts="--all" --redact
+docker run -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro" selfhost-tg-downloader:ci gitleaks git /repo --log-opts="--all" --redact
 docker save selfhost-tg-downloader:local -o runtime.tar
 docker run -v "$PWD:/images:ro" selfhost-tg-downloader:ci trivy image --input /images/runtime.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1
 ```
 
-The tests do not require Telegram or Instagram accounts. Settings are isolated and destructive cleanup calls are mocked in cleanup tests. There is no coverage percentage or test-count badge: the Actions logs are the source of truth for the current run.
+These commands are checks to run, not a promise that every security gate is currently green. Tests isolate settings and mock destructive cleanup. Use isolated data, never production state.
+
+### Project layout
+
+```text
+src/
+  __main__.py        Startup, logging, database initialization, polling
+  config.py          Environment-based settings
+  bot.py             Bot and dispatcher construction
+  healthcheck.py     Startup diagnostics
+  database.py        SQLite file-ID cache
+  utils.py           URL cleanup
+  handlers/          Commands, ordinary messages, inline queries
+  downloader/        gallery-dl subprocess and media collection
+tests/              Automated tests
+```
+
+Startup diagnostics report configuration paths, authentication availability, and executable discovery. They are logs, not an HTTP health endpoint or a guarantee that an external download will succeed.
 
 ## CI and releases
 
@@ -127,14 +190,7 @@ The tests do not require Telegram or Instagram accounts. Settings are isolated a
 
 Maintainers: update the project version and lockfile together in a reviewed PR, then merge when ready to publish. Successful checks for the merged main commit trigger publication automatically if that version has no release. An existing tag without a corresponding release is treated as an error requiring manual resolution rather than silently repointed. Configure branch protection to require PR review and checks as appropriate; this change does not modify repository protection. The workflow never deploys anything. Publication is intentionally not tested end-to-end from a PR, and unit-test success alone does not verify a real release.
 
-## Limits and operational notes
-
-- Availability depends on upstream extractors, authentication, rate limits, and Telegram Bot API restrictions. Login does not guarantee that every private or restricted post is downloadable.
-- The 50 MiB check is applied **after download** by the regular message handler. It is not a disk quota, and the inline handler does not currently apply the same explicit size check. Provision disk space and external resource limits.
-- No per-user access control, request queue, download deduplication for concurrent misses, cache eviction, or metrics endpoint is implemented.
-- `gallery-dl` may need additional optional downloaders for some media; the image provides `gallery-dl` and `ffmpeg`, not every optional backend.
-- Treat tokens, cookies, generated authentication files, database contents, and buffer channel messages as sensitive. Use a dedicated bot/account and restrict server access.
-- Vulnerable upstream OS/media packages can block the strict Trivy gate even when application tests pass. Fix or replace the affected dependency; do not bypass the gate to publish.
+Strict runtime security findings can block a release even if application tests pass. Fix or replace affected dependencies; do not bypass the gate. This pipeline is not evidence that any image has already been published.
 
 ## License
 
