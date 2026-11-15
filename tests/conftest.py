@@ -18,4 +18,5 @@ pytest_plugins = (
     "tests.fixtures.inline",
     "tests.fixtures.downloading",
     "tests.fixtures.chat",
+    "tests.fixtures.collection",
 )
