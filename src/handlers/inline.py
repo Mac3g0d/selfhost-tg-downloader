@@ -48,7 +48,7 @@ PLACEHOLDER_PREFIX = "w:"
 REFRESH_PREFIX = "r:"
 PAGE_PREFIX = "g:"
 PAGE_NOOP = "g:-"
-TEXT_DOWNLOADING = "⏳ Скачиваю…"
+TEXT_DOWNLOADING = "⏳ Голова, терпани малеха, качаю"
 TEXT_UPLOADING = "⬆️ Загружаю в Telegram…"
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 

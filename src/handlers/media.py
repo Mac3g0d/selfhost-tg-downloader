@@ -65,7 +65,7 @@ async def _deliver_url(message: types.Message, url: str, timer: StageTimer) -> N
         raise RuntimeError("Message is not bound to a bot")
 
     async def announce() -> types.Message:
-        status = await message.reply("⏳ Скачиваю...")
+        status = await message.reply("⏳ Голова, терпани малеха, качаю")
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action=ChatAction.UPLOAD_VIDEO,
