@@ -73,3 +73,15 @@ OUTPUT_MODE_NULL: Final = "null"
 
 FOREIGN_EXTENSIONS: Final[tuple[str, ...]] = (".pdf", ".docx", ".html", ".txt")
 PEER_TIMEOUT_SECONDS: Final = 1
+COLLECT_NAME_MIN_CHARS: Final = 8
+COLLECT_NAME_MAX_CHARS: Final = 16
+COLLECT_CONTENT_LENGTH: Final = 16
+
+GALLERY_DOWNLOAD_TIMING_KEY: Final = "download_ms"
+GALLERY_JOB_TIMEOUT_SECONDS: Final = 0.01
+GALLERY_JOB_WAIT_SECONDS: Final = 5
+GALLERY_CLEANUP_WAIT_SECONDS: Final = 1
+GALLERY_POLL_SECONDS: Final = 0.001
+GALLERY_RUN_JOB_TARGET: Final = "downloader.gdl_job.run_job"
+GALLERY_RMTREE_TARGET: Final = "downloader.gallery.shutil.rmtree"
+GALLERY_FAILURE_STATUS_MAX: Final = 255
