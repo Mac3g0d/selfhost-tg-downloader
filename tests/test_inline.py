@@ -15,7 +15,7 @@ import constants as app
 from database import get_cached_media, get_inline_link
 from handlers import inline
 from tests import constants as spec
-from tests.fixtures.inline import Delivery, DownloadGate, Edits, FailingDownload, Requests
+from tests.fixtures import Delivery, DownloadGate, Edits, FailingDownload, Requests
 
 
 async def test_cache_miss_is_answered_at_once_with_placeholder(

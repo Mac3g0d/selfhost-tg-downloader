@@ -12,7 +12,7 @@ from constants import ERROR_TEXT_LIMIT
 from handlers import delivery
 from handlers.media import _process_url, on_message
 from tests.constants import FAILURE_MARK, FAILURE_MARKUP_ALLOWANCE, UNBOUND_MESSAGE_PATTERN
-from tests.fixtures.chat import CachedLink, DeliveryCase, FailedDownload, LinkPair, Telegram
+from tests.fixtures import CachedLink, DeliveryCase, FailedDownload, LinkPair, Telegram
 from timing import StageTimer
 
 

@@ -9,7 +9,7 @@ from constants import INSTAGRAM_PATH
 from downloader.gallery import DownloadResult, cleanup, download_media
 from downloader.gdl_job import Job, apply_settings, run_job
 from tests import constants as spec
-from tests.fixtures.downloading import (
+from tests.fixtures import (
     Credentials,
     JobPair,
     ParentJob,

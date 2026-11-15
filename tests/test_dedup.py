@@ -1,5 +1,5 @@
 from handlers.media import _extract_urls
-from tests.fixtures.detection import LinkText
+from tests.fixtures import LinkText
 
 
 async def test_extract_urls_ignores_surrounding_spaces(padded_link: LinkText) -> None:

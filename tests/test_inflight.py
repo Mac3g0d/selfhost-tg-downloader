@@ -1,7 +1,7 @@
 from collections.abc import Awaitable, Callable
 
 import inflight
-from tests.fixtures.inflight import CriticalSection, TimedStages
+from tests.fixtures import CriticalSection, TimedStages
 
 
 async def test_same_url_is_serialized_and_lock_is_released(

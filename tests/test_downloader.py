@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from downloader.gallery import MediaFile, _collect_media
-from tests.fixtures.collection import Library
+from tests.fixtures import Library
 
 
 async def test_collect_media_finds_video_and_image(mixed_library: Library) -> None:

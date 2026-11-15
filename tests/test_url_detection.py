@@ -1,5 +1,5 @@
 from handlers.media import _extract_urls
-from tests.fixtures.detection import LinkText
+from tests.fixtures import LinkText
 
 
 async def test_link_on_every_supported_host_is_cleaned(host_link: LinkText) -> None:

@@ -1,33 +1,12 @@
 """Smoke tests for the installed package and its console entry point."""
 
 import importlib
-from importlib.metadata import EntryPoint, distribution
+from importlib.metadata import EntryPoint
 from types import ModuleType
 
 import pytest
 
-from tests.constants import (
-    DISTRIBUTION_NAME,
-    ENTRY_POINT_NAME,
-    ENTRY_POINT_TARGET,
-    PACKAGE_MODULES,
-)
-
-
-@pytest.fixture
-def entry_point() -> EntryPoint:
-    """The console entry point of the installed distribution."""
-    return next(
-        point
-        for point in distribution(DISTRIBUTION_NAME).entry_points
-        if point.name == ENTRY_POINT_NAME
-    )
-
-
-@pytest.fixture
-def entry_module(entry_point: EntryPoint) -> ModuleType:
-    """The module the entry point lives in, imported."""
-    return importlib.import_module(entry_point.module)
+from tests.constants import ENTRY_POINT_TARGET, PACKAGE_MODULES
 
 
 @pytest.mark.parametrize("module_name", PACKAGE_MODULES)
