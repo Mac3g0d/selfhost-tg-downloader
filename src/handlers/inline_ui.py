@@ -68,10 +68,12 @@ def pager(key: str, index: int, total: int) -> types.InlineKeyboardMarkup | None
 
 
 def placeholder_result(key: str, url: str) -> types.InlineQueryResultArticle:
-    """Article that is sent at once and later replaced by the media."""
-    # Telegram drops an inline answer that arrives later than roughly 8-10 seconds
-    # after the query (measured on a live bot), so a cache miss is answered at once
-    # with a placeholder message that is replaced by the media when it is ready.
+    """Article that is sent at once and later replaced by the media.
+
+    Telegram drops an inline answer that arrives later than roughly 8-10 seconds
+    after the query (measured on a live bot), so a cache miss is answered at once
+    with a placeholder message that is replaced by the media when it is ready.
+    """
     text = constants.STATUS_TEMPLATE.format(status=constants.TEXT_DOWNLOADING, url=url)
     return types.InlineQueryResultArticle(
         id=constants.PLACEHOLDER_PREFIX + key,

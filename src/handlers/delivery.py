@@ -48,8 +48,11 @@ async def _reply_cached(
 
 
 async def _announce(message: Message, bot: Bot) -> Message:
+    """Send the status message and the activity hint.
+
+    The activity hint is optional: its failure must not cancel the delivery.
+    """
     status = await message.reply(TEXT_DOWNLOADING)
-    # The activity hint is optional: its failure must not cancel the delivery.
     with contextlib.suppress(exceptions.TelegramAPIError):
         await bot.send_chat_action(chat_id=message.chat.id, action=UPLOAD_ACTION)
     return status
@@ -58,11 +61,14 @@ async def _announce(message: Message, bot: Bot) -> Message:
 async def _download_with_status(
     message: Message, url: str, timer: StageTimer
 ) -> tuple[DownloadResult, Message]:
+    """Download while the status message is shown.
+
+    The status message must not delay the download, so both run at once.
+    """
     bot = message.bot
     if bot is None:
         raise RuntimeError("Message is not bound to a bot")
 
-    # The status message must not delay the download: run both at once.
     with timer.stage("download"):
         outcome, announced = await asyncio.gather(
             download_media(url), _announce(message, bot), return_exceptions=True

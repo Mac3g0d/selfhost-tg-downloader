@@ -1,9 +1,9 @@
-# flake8: noqa: WPS100 -- module name is imported project-wide as `utils`
+# flake8: noqa: WPS100
 from urllib.parse import urlparse, urlunparse
 
 
 def clean_url(url: str) -> str:
+    """Strip query, fragments, and trailing slash for TikTok and Instagram."""
     parsed = urlparse(url)
-    # Strip query, fragments, and trailing slash for TikTok and Instagram
     path = parsed.path.rstrip("/")
     return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))

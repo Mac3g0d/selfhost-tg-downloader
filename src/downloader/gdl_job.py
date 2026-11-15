@@ -58,14 +58,17 @@ class Job(DownloadJob):  # type: ignore[misc]
         dest: Path | None = None,
         cancel: threading.Event | None = None,
     ) -> None:
+        """Bind the job to its directory.
+
+        gallery-dl keeps its configuration in one process-wide store, so the
+        per-request destination is answered through a wrapped `extractor.config`
+        instead of being written to that store.
+        """
         super().__init__(extr, parent)
         self.dest: str = parent.dest if parent else str(dest)
         self.cancel: threading.Event = parent.cancel if parent else cancel or threading.Event()
         self.root: Job = parent.root if parent else self
         self.first_file_at: float | None = None
-
-        # gallery-dl keeps its configuration in one process-wide store, so the
-        # per-request destination is answered here instead of being written to it.
         self._shared_config = self.extractor.config
         self.extractor.config = self._answer_config
 
@@ -121,21 +124,29 @@ class _Setup:
         root.addHandler(ERRORS)
 
     def _set_instagram_defaults(self) -> None:
-        # gallery-dl spaces Instagram requests 6-12 s apart within one process.
-        # Every download used to be a fresh process, which never waited; keep
-        # that behaviour unless the user's own gallery-dl config says otherwise.
+        """Set Instagram defaults unless the user's gallery-dl config sets them.
+
+        gallery-dl spaces Instagram requests 6-12 s apart within one process.
+        Every download used to be a fresh process, which never waited, so
+        `sleep-request` is forced to 0 to keep that behaviour.
+
+        Without yt-dlp gallery-dl first fails to open the DASH manifest and
+        then falls back to the plain video URL, so `videos` is set to "merged"
+        to ask for that URL directly.
+        """
         if gdl_config.get(INSTAGRAM_PATH, "sleep-request") is None:
             gdl_config.set(INSTAGRAM_PATH, "sleep-request", 0)
 
-        # Without yt-dlp gallery-dl first fails to open the DASH manifest and
-        # then falls back to the plain video URL; ask for that URL directly.
         has_ytdl = find_spec("yt_dlp") is not None or find_spec("youtube_dl") is not None
         if not has_ytdl and gdl_config.get(INSTAGRAM_PATH, "videos") is None:
             gdl_config.set(INSTAGRAM_PATH, "videos", "merged")
 
     def _lock_extractor_lookup(self) -> None:
-        # Extractor lookup lazily imports modules through one shared generator,
-        # which must not be advanced from two worker threads at once.
+        """Serialize extractor lookup.
+
+        It lazily imports modules through one shared generator, which must not
+        be advanced from two worker threads at once.
+        """
         self._find = gdl_extractor.find
         gdl_extractor.find = self._locked_find  # ty: ignore[invalid-assignment]
 
@@ -166,9 +177,12 @@ def apply_settings() -> None:
 
 
 def run_job(url: str, work_dir: Path, cancel: threading.Event) -> tuple[int, str, FirstFileAt]:
-    """Blocking gallery-dl run; returns (status, error text, time of first file)."""
+    """Blocking gallery-dl run; returns (status, error text, time of first file).
+
+    A job cancelled while it waited for a free worker (it timed out) must not
+    contact the site at all.
+    """
     if cancel.is_set():
-        # Timed out while waiting for a free worker: do not contact the site at all.
         return CANCELLED_STATUS, "Download cancelled", None
     _SETUP.ensure()
     apply_settings()

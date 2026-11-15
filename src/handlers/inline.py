@@ -1,7 +1,9 @@
-"""Inline mode handlers."""
+"""Inline mode handlers.
+
+One feature keeps its handlers and their small helpers together.
+"""
 
 # flake8: noqa: WPS202
-# One feature keeps its handlers and their small helpers together.
 
 import asyncio
 import contextlib
@@ -107,10 +109,10 @@ async def _send_media(bot: Bot, media_file: MediaFile, caption: str) -> dict[str
 async def _upload_all(
     bot: Bot, downloaded: DownloadResult, caption: str, timer: StageTimer
 ) -> ui.MediaEntries:
+    """Upload the files one at a time on purpose, so the buffer chat is not flooded."""
     uploaded: ui.MediaEntries = []
     for media_file in downloaded.media_files:
         with timer.stage("upload"):
-            # One upload at a time on purpose, so the buffer chat is not flooded.
             entry = await _send_media(bot, media_file, caption)  # noqa: WPS476
         if entry:
             uploaded.append(entry)
@@ -184,12 +186,14 @@ def _on_job_done(url: str, done: asyncio.Task[ui.MediaEntries]) -> None:
 
 
 def _start_job(bot: Bot, url: str, caption: str) -> _Job:
-    """Return the running preparation of this URL, starting one if needed."""
+    """Return the running preparation of this URL, starting one if needed.
+
+    Preparations started by inline queries are not awaited by anyone until the
+    placeholder is sent, so their number is capped.
+    """
     running = _jobs.get(url)
     if running is not None:
         return running
-    # Preparations started by inline queries are not awaited by anyone until the
-    # placeholder is sent, so their number is capped.
     if len(_jobs) >= MAX_ACTIVE_JOBS:
         raise DeliveryError(TEXT_BUSY)
 
@@ -209,9 +213,13 @@ async def _answer_button(query: types.InlineQuery, label: str, start_parameter: 
 async def _answer_cached(
     query: types.InlineQuery, url: str, cached: ui.MediaEntries, timer: StageTimer
 ) -> None:
+    """Answer a cache hit.
+
+    The link is saved here too, because the pager buttons look it up by this
+    key, however it got cached.
+    """
     key = ui.link_key(url)
     if len(cached) > 1:
-        # The pager buttons look the link up by this key, however it got cached.
         await save_inline_link(key, url)
     answers = ui.cached_results(key, url, cached)
     with timer.stage("answer"):
@@ -227,7 +235,10 @@ async def _show_activity(bot: Bot, user_id: int) -> None:
 async def _answer_uncached(
     query: types.InlineQuery, placeholder: types.InlineQueryResultArticle
 ) -> None:
-    # Not cached by Telegram: the next query for this link must see the real media.
+    """Answer with the placeholder.
+
+    It is not cached by Telegram: the next query for this link must see the real media.
+    """
     await query.answer([placeholder], cache_time=0, is_personal=True)
 
 
@@ -276,7 +287,7 @@ async def on_inline_query(query: types.InlineQuery, bot: Bot) -> None:
 async def _edit_status(
     bot: Bot, inline_message_id: str, status: str, url: str, button: str
 ) -> None:
-    # The status line is cosmetic: its failure must not cancel the delivery.
+    """Show a status line; it is cosmetic, so its failure must not cancel the delivery."""
     try:
         await bot.edit_message_text(
             STATUS_TEMPLATE.format(status=status, url=url),
@@ -306,7 +317,11 @@ class _Delivery:
         self.job: _Job | None = None
 
     async def run(self, user: types.User) -> bool:
-        """Deliver the media, or show why it failed; tell whether it succeeded."""
+        """Deliver the media, or show why it failed; tell whether it succeeded.
+
+        On a flood limit or network trouble the media is cached, so the user
+        can ask again with the button.
+        """
         try:
             await self._deliver(user)
         except DeliveryError as exc:
@@ -322,8 +337,6 @@ class _Delivery:
             log.warning("inline_edit_failed", url=self.url, error=str(exc))
             return False
         except exceptions.TelegramAPIError as exc:
-            # Flood limit or network trouble: the media is cached, so let the
-            # user ask again with the button.
             log.warning("inline_edit_failed", url=self.url, error=str(exc))
             await _edit_status(
                 self.bot,

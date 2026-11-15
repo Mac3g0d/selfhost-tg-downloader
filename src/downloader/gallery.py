@@ -68,8 +68,12 @@ class _Download:
         self._started = time.perf_counter()
 
     async def run(self) -> DownloadResult:
+        """Run the job in the executor.
+
+        `gdl_job.run_job` is looked up on the module at call time so that
+        tests can replace it.
+        """
         log.info("starting_download", url=self.url)
-        # Looked up on the module at call time so that tests can replace it.
         future = asyncio.get_running_loop().run_in_executor(
             _executor, gdl_job.run_job, self.url, self.work_dir, self.cancel
         )
@@ -84,9 +88,13 @@ class _Download:
         return self._finish(status, errors, first_file_at)
 
     def _timed_out(self, future: asyncio.Future[tuple[int, str, float | None]]) -> DownloadResult:
+        """Give up on a timed-out job.
+
+        A thread cannot be killed: the job is only asked to stop at its next
+        step, and its directory is removed in the done callback, once it has
+        really finished writing.
+        """
         log.error("download_timeout", url=self.url, timeout=settings.DOWNLOAD_TIMEOUT)
-        # A thread cannot be killed: ask the job to stop at its next step and
-        # remove its directory only once it has really finished writing.
         self.cancel.set()
         future.add_done_callback(lambda _: cleanup(self.work_dir))
         return DownloadResult(

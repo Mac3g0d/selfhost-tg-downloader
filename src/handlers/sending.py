@@ -53,9 +53,12 @@ async def _send_file(
 async def send_all(
     message: Message, timer: StageTimer, media_files: list[MediaFile]
 ) -> list[CacheItem]:
+    """Send the files one by one.
+
+    Sequential on purpose: keeps the album order and avoids Telegram flood limits.
+    """
     cache_items: list[CacheItem] = []
     for media_file in media_files:
-        # Sequential on purpose: keeps the album order and avoids Telegram flood limits.
         cache_item = await _send_file(message, timer, media_file)  # noqa: WPS476
         if cache_item:
             cache_items.append(cache_item)
