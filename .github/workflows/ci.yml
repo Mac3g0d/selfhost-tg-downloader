@@ -34,6 +34,7 @@ jobs:
         with:
           name: checked-images
           path: .ci-artifacts/
+          include-hidden-files: true
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
