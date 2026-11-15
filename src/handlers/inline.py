@@ -285,8 +285,7 @@ async def on_inline_query(query: InlineQuery, bot: Bot) -> None:
 
     placeholder = InlineQueryResultArticle(
         id=PLACEHOLDER_PREFIX + key,
-        title=secrets.choice(TITLES),
-        description="Отправь — видео появится в этом сообщении",
+        title="⏳ Отправить — медиа появится в сообщении",
         input_message_content=InputTextMessageContent(
             message_text=_status_text(TEXT_DOWNLOADING, url),
             link_preview_options=NO_PREVIEW,

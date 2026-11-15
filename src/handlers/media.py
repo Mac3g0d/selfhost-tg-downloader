@@ -145,6 +145,11 @@ async def on_message(message: types.Message) -> None:
     if not message.text:
         return
 
+    # A placeholder sent through this bot's own inline mode carries the link in
+    # its text; the inline flow replaces that message itself, so do not reply to it.
+    if message.via_bot and message.bot and message.via_bot.id == message.bot.id:
+        return
+
     urls = _extract_urls(message.text)
     if not urls:
         return
