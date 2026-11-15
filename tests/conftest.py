@@ -1,22 +1,21 @@
-import os
-
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-for-ci")
-
-from collections.abc import Iterator
-from unittest.mock import patch
-
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    # Settings are constructed during collection, before fixtures run.
+    env = pytest.MonkeyPatch()
+    env.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
+    env.setenv("COOKIES_FILE", "")
+    env.setenv("INSTAGRAM_USER", "")
+    env.setenv("INSTAGRAM_PASS", "")
+    env.setenv("BUFFER_CHAT_ID", "0")
+    config.add_cleanup(env.undo)
+
+
 @pytest.fixture(autouse=True)
-def _test_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token-for-ci")
-    monkeypatch.setenv("COOKIES_FILE", "")
-    monkeypatch.setenv("INSTAGRAM_USER", "")
-    monkeypatch.setenv("INSTAGRAM_PASS", "")
-    monkeypatch.setenv("BUFFER_CHAT_ID", "0")
+def _test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import Settings, settings
 
-    from src import config
-
-    with patch.dict(config.settings.__dict__, config.Settings().model_dump()):
-        yield
+    # Mutate the shared object, not the config module's binding: callers import it.
+    for name, value in Settings().model_dump().items():
+        monkeypatch.setattr(settings, name, value)

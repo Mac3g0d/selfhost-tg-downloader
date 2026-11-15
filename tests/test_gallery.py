@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.config import Settings
+from src.config import settings
 from src.downloader.gallery import _build_cmd, _build_gallery_dl_config, cleanup
 
 
@@ -15,13 +15,10 @@ class TestBuildGalleryDlConfig:
     def test_creates_config_with_credentials(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("INSTAGRAM_USER", "testuser")
-        monkeypatch.setenv("INSTAGRAM_PASS", "testpass")
+        monkeypatch.setattr(settings, "INSTAGRAM_USER", "testuser")
+        monkeypatch.setattr(settings, "INSTAGRAM_PASS", "testpass")
 
-        from src import config
-
-        with patch.dict(config.settings.__dict__, Settings().model_dump()):
-            config_path = _build_gallery_dl_config(tmp_path)
+        config_path = _build_gallery_dl_config(tmp_path)
 
         assert config_path is not None
         assert config_path.exists()
@@ -33,8 +30,8 @@ class TestBuildGalleryDlConfig:
     def test_partial_credentials_returns_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("INSTAGRAM_USER", "testuser")
-        monkeypatch.setenv("INSTAGRAM_PASS", "")
+        monkeypatch.setattr(settings, "INSTAGRAM_USER", "testuser")
+        monkeypatch.setattr(settings, "INSTAGRAM_PASS", "")
         assert _build_gallery_dl_config(tmp_path) is None
 
 
@@ -49,12 +46,9 @@ class TestBuildCmd:
     def test_with_cookies_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cookies = tmp_path / "cookies.txt"
         cookies.write_text("cookie data")
-        monkeypatch.setenv("COOKIES_FILE", str(cookies))
+        monkeypatch.setattr(settings, "COOKIES_FILE", str(cookies))
 
-        from src import config
-
-        with patch.dict(config.settings.__dict__, Settings().model_dump()):
-            cmd = _build_cmd(tmp_path)
+        cmd = _build_cmd(tmp_path)
 
         assert "--cookies" in cmd
         assert str(cookies) in cmd
@@ -68,30 +62,24 @@ class TestBuildCmd:
     ) -> None:
         cookies = tmp_path / "cookies.txt"
         cookies.write_text("cookie data")
-        monkeypatch.setenv("COOKIES_FILE", str(cookies))
-        monkeypatch.setenv("INSTAGRAM_USER", "user")
-        monkeypatch.setenv("INSTAGRAM_PASS", "pass")
+        monkeypatch.setattr(settings, "COOKIES_FILE", str(cookies))
+        monkeypatch.setattr(settings, "INSTAGRAM_USER", "user")
+        monkeypatch.setattr(settings, "INSTAGRAM_PASS", "pass")
 
-        from src import config
-
-        with patch.dict(config.settings.__dict__, Settings().model_dump()):
-            cmd = _build_cmd(tmp_path)
+        cmd = _build_cmd(tmp_path)
 
         assert "--config" in cmd
         assert "--cookies" not in cmd
 
 
 class TestCleanup:
-    def test_removes_directory(self, tmp_path: Path) -> None:
-        work = tmp_path / "work"
-        work.mkdir()
-        (work / "file.txt").write_text("data")
-        with patch("src.downloader.gallery.shutil.rmtree") as remove:
-            cleanup(work)
-        remove.assert_called_once_with(work, ignore_errors=True)
-        assert work.exists()
+    def test_requests_directory_cleanup(self, tmp_path: Path) -> None:
+        with patch("src.downloader.gallery.shutil.rmtree") as remove_tree:
+            cleanup(tmp_path)
+        remove_tree.assert_called_once_with(tmp_path, ignore_errors=True)
 
     def test_nonexistent_directory(self, tmp_path: Path) -> None:
-        with patch("src.downloader.gallery.shutil.rmtree") as remove:
-            cleanup(tmp_path / "nonexistent")
-        remove.assert_called_once_with(tmp_path / "nonexistent", ignore_errors=True)
+        missing = tmp_path / "nonexistent"
+        with patch("src.downloader.gallery.shutil.rmtree") as remove_tree:
+            cleanup(missing)
+        remove_tree.assert_called_once_with(missing, ignore_errors=True)
